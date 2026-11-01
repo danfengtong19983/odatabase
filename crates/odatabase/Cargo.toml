@@ -21,6 +21,7 @@ odatabase-sql.workspace = true
 odatabase-uri.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
 axum.workspace = true
 chrono.workspace = true
 http-body-util.workspace = true

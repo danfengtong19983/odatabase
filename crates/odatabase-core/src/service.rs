@@ -1,3 +1,4 @@
+use crate::change::{AcceptAll, ChangeHandler};
 use crate::paging::{OffsetPaging, PagingProvider};
 use crate::{ODataError, ODataRequest, ODataResponse};
 use http::Method;
@@ -32,6 +33,7 @@ pub(crate) struct Inner {
     pub config: Config,
     pub paging: Arc<dyn PagingProvider>,
     pub extensions: HashMap<String, Arc<dyn QueryExtension>>,
+    pub changes: Arc<dyn ChangeHandler>,
 }
 
 /// An OData service: a model bound to a database. Cheap to clone.
@@ -46,6 +48,7 @@ pub struct ServiceBuilder {
     config: Config,
     paging: Arc<dyn PagingProvider>,
     extensions: HashMap<String, Arc<dyn QueryExtension>>,
+    changes: Arc<dyn ChangeHandler>,
 }
 
 impl Service {
@@ -55,6 +58,7 @@ impl Service {
             config: Config::default(),
             paging: Arc::new(OffsetPaging::default()),
             extensions: HashMap::new(),
+            changes: Arc::new(AcceptAll),
         }
     }
 
@@ -95,6 +99,9 @@ impl Service {
         )?;
         match req.method {
             Method::GET => self.get(req, &uri).await,
+            Method::POST | Method::PATCH | Method::PUT | Method::DELETE => {
+                self.modify(req, &uri).await
+            }
             _ => Err(ODataError::new(
                 405,
                 format!("{} is not allowed here", req.method),
@@ -125,6 +132,12 @@ impl ServiceBuilder {
         self
     }
 
+    /// Registers hooks that run around writes.
+    pub fn change_handler(mut self, handler: impl ChangeHandler + 'static) -> Self {
+        self.changes = Arc::new(handler);
+        self
+    }
+
     /// Validates the model and binds it to `database`.
     pub fn build(self, database: impl Into<Database>) -> Result<Service, ModelError> {
         let model = self.model.build()?;
@@ -135,6 +148,7 @@ impl ServiceBuilder {
                 config: self.config,
                 paging: self.paging,
                 extensions: self.extensions,
+                changes: self.changes,
             }),
         })
     }

@@ -56,6 +56,18 @@ CREATE TABLE settings (
   id INTEGER PRIMARY KEY,
   theme TEXT
 );
+CREATE TABLE ticket (
+  id SERIAL PRIMARY KEY,
+  title TEXT NOT NULL,
+  note TEXT,
+  priority INTEGER,
+  version INTEGER NOT NULL
+);
+CREATE TABLE ticket_tag (
+  ticket_id INTEGER NOT NULL REFERENCES ticket (id),
+  position INTEGER NOT NULL,
+  tag TEXT NOT NULL
+);
 INSERT INTO business_partner
   (id, kind, version, name, rating, revenue, score, active, abc, flags, created_at, founded, external_id,
    addr_street, addr_city, addr_country, owner_id, first_name, size)

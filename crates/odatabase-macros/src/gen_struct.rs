@@ -89,10 +89,12 @@ fn property(field: &Field, f: &FieldAttrs) -> Result<TokenStream> {
     let visible = &f.visible_for;
     let annotations = &f.annotations;
     let (searchable, computed) = (f.searchable, f.computed);
+    // An embedded value whose columns are all null reads as null, whatever the Rust type says.
+    let embedded = f.embedded;
     Ok(quote! {
         let ft = <#ty as ::odatabase::edm::EdmField>::field_type(b);
         let mut p = ::odatabase::edm::Property::new(#name, #column, ft.kind);
-        p.nullable = ft.nullable;
+        p.nullable = ft.nullable || #embedded;
         p.facets = ::odatabase::edm::Facets {
             max_length: #max_length,
             precision: #precision,

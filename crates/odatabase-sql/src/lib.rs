@@ -13,6 +13,7 @@ mod query;
 mod record;
 mod search;
 mod values;
+mod write;
 
 pub use context::{ClaimValue, Claims, QueryContext, QueryExtension, TableRef};
 pub use db::{ColumnDecode, Database, Session, Tx};
@@ -23,3 +24,4 @@ pub use query::{Page, ReadRequest, count_collection, read_collection, read_entit
 pub use record::{Node, Record, Refs};
 pub use sea_query;
 pub use values::{from_sea_string, to_sea};
+pub use write::{ColumnValue, ColumnWrite, delete, insert, read_columns, update};

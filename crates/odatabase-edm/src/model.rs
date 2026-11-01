@@ -239,6 +239,10 @@ impl Property {
         }
     }
 
+    pub fn is_complex(&self) -> bool {
+        matches!(self.kind, TypeKind::Complex(_))
+    }
+
     pub fn is_stored_scalar(&self) -> bool {
         self.collection.is_none()
             && self.transient.is_none()

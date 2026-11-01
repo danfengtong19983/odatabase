@@ -168,6 +168,26 @@ pub struct Setting {
     pub theme: Option<String>,
 }
 
+#[derive(ODataEntity)]
+#[odata(table = "ticket")]
+pub struct Ticket {
+    #[odata(key, computed)]
+    pub id: i32,
+    #[odata(max_length = 20)]
+    pub title: String,
+    pub note: Option<String>,
+    pub priority: Option<i32>,
+    #[odata(etag)]
+    pub version: i32,
+    #[odata(collection(
+        table = "ticket_tag",
+        owner(id = "ticket_id"),
+        value_column = "tag",
+        order_column = "position"
+    ))]
+    pub tags: Vec<String>,
+}
+
 pub fn builder() -> ServiceBuilder {
     Service::builder("Test")
         .entity::<BusinessPartner>()
@@ -175,6 +195,7 @@ pub fn builder() -> ServiceBuilder {
         .entity::<Person>()
         .entity::<Division>()
         .entity::<Setting>()
+        .entity::<Ticket>()
 }
 
 /// An HTTP client for one service instance.
@@ -291,7 +312,8 @@ pub async fn sqlite_pool(schema: &str) -> sqlx::SqlitePool {
         .connect_with(options)
         .await
         .unwrap();
-    sqlx::raw_sql(AssertSqlSafe(schema.replace("BYTEA", "BLOB")))
+    let schema = schema.replace("BYTEA", "BLOB").replace("SERIAL", "INTEGER");
+    sqlx::raw_sql(AssertSqlSafe(schema))
         .execute(&pool)
         .await
         .unwrap();
