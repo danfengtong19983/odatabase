@@ -29,4 +29,4 @@ pub use query::{
 pub use record::{Node, Record, Refs};
 pub use sea_query;
 pub use values::{from_sea_string, to_sea};
-pub use write::{ColumnValue, ColumnWrite, delete, insert, read_columns, update};
+pub use write::{ColumnValue, ColumnWrite, delete, insert, lock_row, read_columns, update};

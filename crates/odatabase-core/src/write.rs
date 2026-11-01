@@ -732,17 +732,6 @@ impl Service {
         Ok(())
     }
 
-    /// The key of the entity at `path`, respecting row restrictions.
-    pub(crate) async fn entity_key_of(
-        &self,
-        req: &ODataRequest,
-        session: &Session,
-        path: &[Segment],
-        type_name: &str,
-    ) -> Result<EntityKey, ODataError> {
-        self.entity_key(req, session, path, type_name).await
-    }
-
     async fn entity_key(
         &self,
         req: &ODataRequest,
@@ -832,7 +821,7 @@ impl Service {
     }
 
     /// Reads the row to change, checking existence and `If-Match`.
-    async fn locate(
+    pub(crate) async fn locate(
         &self,
         req: &ODataRequest,
         session: &Session,

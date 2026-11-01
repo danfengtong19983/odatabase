@@ -163,6 +163,28 @@ pub async fn delete(
     session.affected(&stmt).await
 }
 
+/// Locks the row at `segments` until the transaction ends, so that a check made after this
+/// call stays true. SQLite has no row locks, and its writers already run one at a time.
+pub async fn lock_row(
+    ctx: &QueryContext<'_>,
+    session: &Session,
+    segments: &[Segment],
+    type_name: &str,
+) -> Result<(), QueryError> {
+    if ctx.dialect != Dialect::Postgres || !matches!(session, Session::Tx(..)) {
+        return Ok(());
+    }
+    let mut tr = Translator::new(ctx.clone());
+    let mut sel = Query::select();
+    source(&mut tr, &mut sel, segments, type_name)?;
+    sel.expr(Expr::val(1));
+    sel.lock(sea_query::LockType::Update);
+    session
+        .fetch(ctx.model, &sel, &[ColumnDecode::Natural])
+        .await?;
+    Ok(())
+}
+
 /// Reads raw columns of the single entity at `segments`, under all row restrictions.
 pub async fn read_columns(
     ctx: &QueryContext<'_>,

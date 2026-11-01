@@ -92,6 +92,29 @@ impl OperationHandler for Point {
     }
 }
 
+/// Advances the ETag, slowly enough for concurrent calls to overlap.
+struct Bump;
+
+#[async_trait]
+impl OperationHandler for Bump {
+    async fn call(&self, ctx: &OperationContext<'_>) -> Result<OperationResult, ODataError> {
+        let Some(Binding::Entity { key, .. }) = &ctx.binding else {
+            return Err(ODataError::bad_request("bound only"));
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        odatabase::sql::update(
+            ctx.model,
+            ctx.session,
+            "business_partner",
+            &[],
+            Some("version"),
+            &[("id".to_owned(), key[0].1.clone())],
+        )
+        .await?;
+        Ok(OperationResult::Void)
+    }
+}
+
 fn service(db: Database) -> Service {
     common::builder()
         .function("Add", |f| {
@@ -132,6 +155,7 @@ fn service(db: Database) -> Service {
                 .param::<Option<bool>>("fail")
                 .handler(Rename)
         })
+        .action("Bump", |a| a.bound_to::<BusinessPartner>().handler(Bump))
         .action("Ping", |a| {
             a.param::<Option<i32>>("x").returns::<i32>().handler(Add)
         })
@@ -267,6 +291,89 @@ async fn actions(app: App) {
     );
 }
 
+async fn if_match_on_bound_operations(app: App) {
+    let json = ("content-type", "application/json");
+    let rename = "BusinessPartners('4')/Test.Rename";
+    let body = json!({"name": "Guarded"}).to_string();
+    let stale = [json, ("if-match", "W/\"9\"")];
+    let r = app.request(Method::POST, rename, &stale, &body).await;
+    assert_eq!(r.status, StatusCode::PRECONDITION_FAILED, "{}", r.text());
+    assert_eq!(
+        app.ok("BusinessPartners('4')").await["Name"],
+        "Fourth",
+        "the handler did not run"
+    );
+    let current = [json, ("if-match", "W/\"1\"")];
+    let r = app.request(Method::POST, rename, &current, &body).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{}", r.text());
+    assert_eq!(app.ok("BusinessPartners('4')").await["Name"], "Guarded");
+    let any = [json, ("if-match", "*")];
+    let r = app.request(Method::POST, rename, &any, &body).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{}", r.text());
+    let r = app
+        .request(
+            Method::POST,
+            "BusinessPartners('nope')/Test.Rename",
+            &any,
+            &body,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+
+    let describe = "BusinessPartners('1')/Test.Describe()";
+    let stale = [("if-match", "W/\"9\"")];
+    let r = app.request(Method::GET, describe, &stale, "").await;
+    assert_eq!(
+        r.status,
+        StatusCode::PRECONDITION_FAILED,
+        "bound functions too"
+    );
+    let current = [("if-match", "W/\"3\"")];
+    let r = app.request(Method::GET, describe, &current, "").await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+    let r = app
+        .request(
+            Method::GET,
+            "BusinessPartners/Test.DescribeAll()",
+            &stale,
+            "",
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "a collection has no ETag");
+
+    let batch = json!({"requests": [{
+        "id": "1", "atomicityGroup": "g", "method": "post",
+        "url": "BusinessPartners('4')/Test.Rename",
+        "headers": {"content-type": "application/json", "if-match": "W/\"9\""},
+        "body": {"name": "Batched"}
+    }]});
+    let r = app
+        .request(Method::POST, "$batch", &[json], &batch.to_string())
+        .await;
+    assert_eq!(
+        r.json()["responses"][0]["status"],
+        412,
+        "inside a change set"
+    );
+}
+
+async fn concurrent_actions_with_one_etag(app: App) {
+    let bump = "BusinessPartners('4')/Test.Bump";
+    let headers = [("if-match", "W/\"1\"")];
+    let (a, b) = tokio::join!(
+        app.request(Method::POST, bump, &headers, ""),
+        app.request(Method::POST, bump, &headers, ""),
+    );
+    let mut statuses = [a.status.as_u16(), b.status.as_u16()];
+    statuses.sort_unstable();
+    assert_eq!(
+        statuses,
+        [204, 412],
+        "only one caller can hold the current ETag"
+    );
+    assert_eq!(app.ok("BusinessPartners('4')").await["Version"], 2);
+}
+
 async fn metadata_lists_operations(app: App) {
     let xml = app.get("$metadata").await.text();
     assert!(xml.contains("<Function Name=\"Add\">"), "{xml}");
@@ -312,6 +419,8 @@ mod run {
         bound_functions,
         database_functions,
         actions,
+        if_match_on_bound_operations,
+        concurrent_actions_with_one_etag,
         metadata_lists_operations,
     );
 }
