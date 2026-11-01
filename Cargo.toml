@@ -1,0 +1,47 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+rust-version = "1.85"
+
+[workspace.dependencies]
+odatabase-edm = { path = "crates/odatabase-edm", version = "0.1.0" }
+odatabase-macros = { path = "crates/odatabase-macros", version = "0.1.0" }
+odatabase-uri = { path = "crates/odatabase-uri", version = "0.1.0" }
+odatabase-sql = { path = "crates/odatabase-sql", version = "0.1.0", default-features = false }
+odatabase-core = { path = "crates/odatabase-core", version = "0.1.0", default-features = false }
+odatabase-axum = { path = "crates/odatabase-axum", version = "0.1.0" }
+odatabase = { path = "crates/odatabase", version = "0.1.0" }
+
+async-trait = "0.1"
+axum = "0.8.9"
+base64 = "0.23.1"
+bytes = "1.12"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+futures = "0.3.34"
+http = "1.5"
+http-body-util = "0.1.5"
+insta = "1.49"
+percent-encoding = "2.3.2"
+proc-macro2 = "1.0"
+quote = "1.0"
+rust_decimal = "1.43"
+sea-query = { version = "1.0.2", features = ["with-chrono", "with-uuid", "with-rust_decimal"] }
+sea-query-sqlx = { version = "0.9.1", features = ["with-chrono", "with-uuid", "with-rust_decimal", "runtime-tokio"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "chrono", "uuid", "rust_decimal"] }
+syn = { version = "3", features = ["full"] }
+testcontainers = "0.28"
+testcontainers-modules = { version = "0.15", features = ["postgres"] }
+thiserror = "2"
+tokio = { version = "1.54", features = ["macros", "rt-multi-thread"] }
+tower = { version = "0.5.3", features = ["util"] }
+uuid = "1.29"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
