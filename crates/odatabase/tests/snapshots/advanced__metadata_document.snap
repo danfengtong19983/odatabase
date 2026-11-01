@@ -1,0 +1,80 @@
+---
+source: crates/odatabase/tests/advanced.rs
+expression: "odatabase::edm::to_csdl_xml(service(pool.into()).model())"
+---
+<?xml version="1.0" encoding="utf-8"?>
+<edmx:Edmx Version="4.0" xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
+<edmx:Reference Uri="https://oasis-tcs.github.io/odata-vocabularies/vocabularies/Org.OData.Core.V1.xml"><edmx:Include Namespace="Org.OData.Core.V1" Alias="Core"/></edmx:Reference>
+<edmx:Reference Uri="https://oasis-tcs.github.io/odata-vocabularies/vocabularies/Org.OData.Capabilities.V1.xml"><edmx:Include Namespace="Org.OData.Capabilities.V1" Alias="Capabilities"/></edmx:Reference>
+<edmx:DataServices>
+<Schema Namespace="Adv" xmlns="http://docs.oasis-open.org/odata/ns/edm">
+<EntityType Name="Car" BaseType="Adv.Vehicle">
+<Property Name="Doors" Type="Edm.Int32"/>
+</EntityType>
+<EntityType Name="Document" HasStream="true">
+<Key><PropertyRef Name="Id"/></Key>
+<Property Name="Id" Type="Edm.Int32" Nullable="false"/>
+<Property Name="Title" Type="Edm.String"/>
+<Property Name="Version" Type="Edm.Int32" Nullable="false"/>
+</EntityType>
+<EntityType Name="Locked">
+<Key><PropertyRef Name="Id"/></Key>
+<Property Name="Id" Type="Edm.Int32" Nullable="false"/>
+<Property Name="Name" Type="Edm.String"><Annotation Term="Core.Immutable" Bool="true"/>
+</Property>
+<Property Name="Code" Type="Edm.String"/>
+<Annotation Term="Core.Description" String="No writes"/>
+<Annotation Term="Capabilities.InsertRestrictions"><Record><PropertyValue Property="Insertable"><Bool>false</Bool></PropertyValue></Record></Annotation>
+<Annotation Term="Capabilities.DeleteRestrictions"><Record><PropertyValue Property="Deletable"><Bool>false</Bool></PropertyValue></Record></Annotation>
+<Annotation Term="Capabilities.UpdateRestrictions"><Record><PropertyValue Property="Updatable"><Bool>false</Bool></PropertyValue></Record></Annotation>
+<Annotation Term="Capabilities.FilterRestrictions"><Record><PropertyValue Property="RequiredProperties"><Collection><Path>Code</Path></Collection></PropertyValue><PropertyValue Property="NonFilterableProperties"><Collection><Path>Name</Path></Collection></PropertyValue></Record></Annotation>
+<Annotation Term="Capabilities.SortRestrictions"><Record><PropertyValue Property="NonSortableProperties"><Collection><Path>Code</Path></Collection></PropertyValue></Record></Annotation>
+<Annotation Term="Capabilities.CountRestrictions"><Record><PropertyValue Property="Countable"><Bool>false</Bool></PropertyValue></Record></Annotation>
+<Annotation Term="Capabilities.TopSupported" Bool="false"/>
+</EntityType>
+<EntityType Name="Place">
+<Key><PropertyRef Name="Id"/></Key>
+<Property Name="Id" Type="Edm.Int32" Nullable="false"/>
+<Property Name="Country" Type="Edm.String"/>
+<Property Name="CountryName" Type="Edm.String"/>
+<Property Name="FirstName" Type="Edm.String"/>
+<Property Name="LastName" Type="Edm.String"/>
+<Property Name="FullName" Type="Edm.String"/>
+<Property Name="Location" Type="Edm.GeographyPoint"/>
+<Property Name="Blurb" Type="Edm.String"/>
+</EntityType>
+<EntityType Name="Truck" BaseType="Adv.Vehicle">
+<Property Name="Payload" Type="Edm.Double"/>
+</EntityType>
+<EntityType Name="Typed">
+<Key><PropertyRef Name="Id"/></Key>
+<Property Name="Id" Type="Edm.Int32" Nullable="false"/>
+<Property Name="Byte" Type="Edm.Byte"/>
+<Property Name="Sbyte" Type="Edm.SByte"/>
+<Property Name="Short" Type="Edm.Int16"/>
+<Property Name="Long" Type="Edm.Int64"/>
+<Property Name="Single" Type="Edm.Single"/>
+<Property Name="Time" Type="Edm.TimeOfDay"/>
+<Property Name="Duration" Type="Edm.Duration"/>
+<Property Name="Binary" Type="Edm.Binary"/>
+<Property Name="Guid" Type="Edm.Guid"/>
+<Property Name="Date" Type="Edm.Date"/>
+<Property Name="Stamp" Type="Edm.DateTimeOffset"/>
+<Property Name="Amount" Type="Edm.Decimal" Precision="20" Scale="6"/>
+<Property Name="Flag" Type="Edm.Boolean"/>
+</EntityType>
+<EntityType Name="Vehicle">
+<Key><PropertyRef Name="Id"/></Key>
+<Property Name="Id" Type="Edm.Int32" Nullable="false"/>
+<Property Name="Name" Type="Edm.String" Nullable="false"/>
+</EntityType>
+<EntityContainer Name="Container">
+<EntitySet Name="Documents" EntityType="Adv.Document"></EntitySet>
+<EntitySet Name="Lockeds" EntityType="Adv.Locked"></EntitySet>
+<EntitySet Name="Places" EntityType="Adv.Place"></EntitySet>
+<EntitySet Name="Typeds" EntityType="Adv.Typed"></EntitySet>
+<EntitySet Name="Vehicles" EntityType="Adv.Vehicle"></EntitySet>
+</EntityContainer>
+</Schema>
+</edmx:DataServices>
+</edmx:Edmx>

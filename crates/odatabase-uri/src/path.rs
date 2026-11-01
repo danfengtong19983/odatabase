@@ -284,10 +284,10 @@ impl PathBuilder<'_> {
             });
             return Ok(());
         }
-        if let Some(a) = args {
-            if self.model.functions.contains_key(name) {
-                return self.function(None, name, a);
-            }
+        if let Some(a) = args
+            && self.model.functions.contains_key(name)
+        {
+            return self.function(None, name, a);
         }
         if args.is_none() && self.model.actions.contains_key(name) {
             return self.action(None, name);

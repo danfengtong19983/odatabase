@@ -58,6 +58,7 @@ async fn singletons_and_documents(app: App) {
         "http://test.local/odata/$metadata#Settings"
     );
     let doc = app.ok("").await;
+    assert_eq!(doc["@odata.context"], "http://test.local/odata/$metadata");
     let names: Vec<&str> = doc["value"]
         .as_array()
         .unwrap()

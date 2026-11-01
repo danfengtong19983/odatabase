@@ -2,14 +2,20 @@
 
 use crate::values::{enum_from_db, from_sea_string};
 use crate::{Dialect, QueryError};
-use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, Utc};
+use chrono::TimeDelta;
+#[cfg(feature = "postgres")]
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use odatabase_edm::{Model, PrimitiveKind, Value};
+#[cfg(feature = "postgres")]
 use rust_decimal::Decimal;
 use sea_query::{QueryStatementWriter, SelectStatement};
 use sea_query_sqlx::SqlxValues;
-use sqlx::{AssertSqlSafe, Column, Row, TypeInfo, ValueRef};
+#[cfg(feature = "postgres")]
+use sqlx::Column;
+use sqlx::{AssertSqlSafe, Row, TypeInfo, ValueRef};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+#[cfg(feature = "postgres")]
 use uuid::Uuid;
 
 /// How to read one result column.

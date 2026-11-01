@@ -311,6 +311,12 @@ mod run {
 }
 
 #[tokio::test]
+async fn metadata_document() {
+    let pool = common::sqlite_pool(common::SCHEMA).await;
+    insta::assert_snapshot!(odatabase::edm::to_csdl_xml(service(pool.into()).model()));
+}
+
+#[tokio::test]
 async fn table_functions_compose_on_postgres() {
     if !common::docker_available() {
         eprintln!("Docker is unavailable: table functions were NOT run");

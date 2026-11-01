@@ -33,11 +33,9 @@ async fn handle(
     let (parts, body) = request.into_parts();
     let path = parts.uri.path().to_owned();
     // The original URI still has the nest prefix, which is part of the service root.
-    let prefix = original
-        .path()
-        .strip_suffix(path.as_str())
-        .unwrap_or("")
-        .trim_end_matches('/');
+    let below_root = path.trim_end_matches('/');
+    let prefix = original.path().trim_end_matches('/');
+    let prefix = prefix.strip_suffix(below_root).unwrap_or(prefix);
     let host = parts
         .headers
         .get(header::HOST)

@@ -564,6 +564,12 @@ mod run {
 }
 
 #[tokio::test]
+async fn metadata_document() {
+    let pool = sqlite_pool(common::SCHEMA).await;
+    insta::assert_snapshot!(odatabase::edm::to_csdl_xml(service(pool.into()).model()));
+}
+
+#[tokio::test]
 async fn transient_properties_need_a_calculator() {
     let pool = sqlite_pool(common::SCHEMA).await;
     let result = Service::builder("Adv").entity::<Place>().build(pool);
