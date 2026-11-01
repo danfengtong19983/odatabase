@@ -58,7 +58,7 @@ upper camel case (`FirstName`). Set `name` or `column` to override either.
 | Reads | Key and navigation paths, `$filter` with lambdas and built-in functions, `$select`, `$orderby`, `$top`, `$skip`, `$count`, `$search`, `$ref`, `$value`, casts |
 | `$apply` | `aggregate`, `groupby`, `filter`, `search`, `compute`, `orderby`, `top`, `skip` and `identity` in pipelines, with `sum`, `min`, `max`, `average`, `countdistinct` and `$count` |
 | `$expand` | Nested options, per-parent `$top` and `$skip`, `$levels`, `/$count`, `/$ref`, `*`, join tables |
-| Writes | POST, PATCH, PUT, DELETE, property and `$value` updates, deep insert, `@odata.bind`, `$ref` links, ETag preconditions, `Prefer: return` |
+| Writes | POST, PATCH, PUT, DELETE, upsert, property and `$value` updates, deep insert, deep update, `@odata.bind`, `$ref` links, ETag preconditions, `Prefer: return` |
 | `$batch` | Multipart and JSON formats, atomic change sets, `Content-ID` references, `continue-on-error` |
 | Operations | Bound and unbound functions and actions, overloads, application handlers, database functions, composable table functions (Postgres) |
 | Security | Row protection from claims (values, ranges, wildcards), group visibility of types, properties, navigations and operations, query extensions |
@@ -89,6 +89,13 @@ authentication.
   that sets them.
 - **Bound actions** check `If-Match` before the handler runs. A handler that changes the entity
   must advance its version column too, through `sql::update`, or the old ETag stays valid.
+- **Upsert.** PATCH or PUT on a missing key creates the entity and answers 201. `If-Match` stops
+  that with a 412, and `If-None-Match: *` makes it insert-only. Generated keys, paths through
+  navigation and types with row restrictions answer 404 instead.
+- **Deep update can delete rows.** A nested array replaces the set. Rows left out are unlinked if
+  the foreign key is optional, but deleted if it is required or part of their key. Join table
+  rows lose only the link. Navigations the body doesn't mention are left alone. Use
+  `Nav@odata.bind` to add links without replacing anything.
 - **API versions** are separate `Service` values mounted at different paths.
 - **Errors.** Database errors reach clients as generic messages. Causes are logged with `tracing`.
 
@@ -110,7 +117,7 @@ These return a status rather than a wrong result:
 | In `$apply`: `concat`, `nest`, `join`, `expand`, `rollup`, `topcount` and similar, custom aggregates, `from`, `Nav/$count` | 501 |
 | `$expand` or `$search` next to `$apply`, and `$apply` inside `$expand` | 501 |
 | Date and duration arithmetic, `maxdatetime`, `mindatetime`, `geo.*`, `hassubset` in `$filter` | 501 |
-| Deep update (nested entities in PATCH or PUT) | 501 |
+| Delta payloads (`Nav@delta`) | 501 |
 | Navigation properties inside complex types | 501 |
 | Entity-typed operation parameters | 501 |
 | Query options on the result of a handler-based operation, other than `$select` and `$expand` | 501 |

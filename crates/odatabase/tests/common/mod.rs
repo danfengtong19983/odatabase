@@ -145,6 +145,8 @@ pub struct Project {
         partner = "Projects"
     ))]
     pub partners: Nav,
+    #[odata(has_many(target = Ticket, on(id = "project_id")))]
+    pub tickets: Nav,
 }
 
 #[derive(ODataEntity)]
@@ -179,6 +181,7 @@ pub struct Ticket {
     pub priority: Option<i32>,
     #[odata(etag)]
     pub version: i32,
+    pub project_id: Option<i32>,
     #[odata(collection(
         table = "ticket_tag",
         owner(id = "ticket_id"),

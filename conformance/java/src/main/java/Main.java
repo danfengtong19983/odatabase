@@ -186,6 +186,32 @@ public class Main {
       catch (ODataClientErrorException e) { expect(e.getStatusLine().getStatusCode() == 412, e.getMessage()); return "stale tag got 412"; }
       throw new AssertionError("expected 412");
     });
+    check("upsert with PATCH", () -> {
+      ClientEntity patch = client.getObjectFactory().newEntity(new FullQualifiedName("Test.Role"));
+      patch.getProperties().add(prim("Label", pv().buildString("upserted")));
+      var res = client.getCUDRequestFactory().getEntityUpdateRequest(roleUri("4", 72), UpdateType.PATCH, patch).execute();
+      expect(res.getStatusCode() == 201, "status " + res.getStatusCode());
+      expect("upserted".equals(text(entity(roleUri("4", 72)), "Label")), "not stored");
+      var second = client.getCUDRequestFactory().getEntityUpdateRequest(roleUri("4", 72), UpdateType.PATCH, patch).execute();
+      expect(second.getStatusCode() == 204, "second status " + second.getStatusCode());
+      return "201, then 204";
+    });
+    check("deep update with an inline set", () -> {
+      ClientEntity parent = client.getObjectFactory().newEntity(new FullQualifiedName("Test.BusinessPartner"));
+      parent.getProperties().add(prim("Name", pv().buildString("Deep from Olingo")));
+      var roles = client.getObjectFactory().newEntitySet();
+      ClientEntity child = client.getObjectFactory().newEntity(new FullQualifiedName("Test.Role"));
+      child.getProperties().add(prim("Code", pv().buildInt32(6)));
+      child.getProperties().add(prim("Label", pv().buildString("nested")));
+      roles.getEntities().add(child);
+      parent.addLink(client.getObjectFactory().newDeepInsertEntitySet("Roles", roles));
+      URI uri = set("BusinessPartners").appendKeySegment("2").build();
+      var res = client.getCUDRequestFactory().getEntityUpdateRequest(uri, UpdateType.PATCH, parent).execute();
+      expect(res.getStatusCode() == 204, "status " + res.getStatusCode());
+      var now = feed(set("BusinessPartners").appendKeySegment("2").appendNavigationSegment("Roles").build());
+      expect(now.getEntities().size() == 1 && "nested".equals(text(now.getEntities().get(0), "Label")), "roles");
+      return "1 role replaced";
+    });
     check("delete", () -> {
       ODataDeleteRequest r = client.getCUDRequestFactory().getDeleteRequest(roleUri("4", 70));
       expect(r.execute().getStatusCode() == 204, "status");

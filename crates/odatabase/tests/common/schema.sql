@@ -61,7 +61,8 @@ CREATE TABLE ticket (
   title TEXT NOT NULL,
   note TEXT,
   priority INTEGER,
-  version INTEGER NOT NULL
+  version INTEGER NOT NULL,
+  project_id INTEGER REFERENCES project (id)
 );
 CREATE TABLE ticket_tag (
   ticket_id INTEGER NOT NULL REFERENCES ticket (id),
