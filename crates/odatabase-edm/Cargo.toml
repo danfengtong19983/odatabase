@@ -1,0 +1,18 @@
+[package]
+name = "odatabase-edm"
+description = "OData v4 entity data model, primitive values and CSDL writers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+base64.workspace = true
+chrono.workspace = true
+rust_decimal.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true
