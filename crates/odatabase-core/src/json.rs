@@ -124,7 +124,10 @@ impl Writer<'_> {
                     if let Some(next) = next_link {
                         out.insert(format!("{name}@odata.nextLink"), next.clone().into());
                     }
-                    out.insert(name.clone(), self.node(node));
+                    out.insert(name.clone(), self.related(concrete, name, node));
+                }
+                Node::Entity(_) => {
+                    out.insert(name.clone(), self.related(concrete, name, node));
                 }
                 Node::Value(v) => {
                     if full && let Some(t) = odata_type(v) {
@@ -146,6 +149,20 @@ impl Writer<'_> {
             }
         }
         out
+    }
+
+    /// Serializes an expanded navigation against the type the navigation declares.
+    fn related(&self, owner: &str, name: &str, node: &Node) -> Json {
+        let declared = self
+            .model
+            .navigation(owner, name)
+            .map(|n| n.target.as_str());
+        let write = |r: &Record| Json::Object(self.entity(r, declared.unwrap_or(&r.type_name)));
+        match node {
+            Node::Entity(Some(r)) => write(r),
+            Node::Entities { items, .. } => items.iter().map(write).collect(),
+            _ => Json::Null,
+        }
     }
 
     pub fn etag(&self, rec: &Record) -> Option<String> {

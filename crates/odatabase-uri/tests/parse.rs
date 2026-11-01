@@ -407,10 +407,7 @@ fn expand() {
     assert!(partner.options.expand[0].count_only);
 
     assert_eq!(ok("Partners", "$expand=*").options.expand.len(), 1);
-    assert_eq!(
-        ok("Partners", "$expand=Roles/$ref").options.expand[0].ref_only,
-        true
-    );
+    assert!(ok("Partners", "$expand=Roles/$ref").options.expand[0].ref_only);
     assert_eq!(
         ok("Roles", "$expand=Partner($levels=2)").options.expand[0].levels,
         Some(Levels::Number(2))
