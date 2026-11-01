@@ -180,7 +180,10 @@ fn path_errors_use_the_right_status() {
     assert_eq!(fail("Partners('1')/$count", "").status, 400);
     assert_eq!(fail("Partners/$count/x", "").status, 400);
     assert_eq!(fail("$all", "").status, 501);
-    assert_eq!(fail("Partners", "$apply=aggregate(Age)").status, 501);
+    assert_eq!(
+        fail("Partners", "$apply=concat(identity,identity)").status,
+        501
+    );
     assert_eq!(fail("Partners", "$nope=1").status, 400);
     assert_eq!(fail("Partners", "$top=-1").status, 400);
     assert_eq!(fail("Partners", "$top=18446744073709551615").status, 400);

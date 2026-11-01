@@ -485,6 +485,55 @@ async fn capabilities(app: App) {
     assert_eq!(app.status("Lockeds?$filter=Code eq 'x'&$top=1").await, 501);
 }
 
+async fn aggregation_features(app: App) {
+    let doc = app
+        .ok("Places?$apply=search(bike)/aggregate($count as N)")
+        .await;
+    assert_eq!(doc["value"][0]["N"], 2, "search before aggregating");
+    let doc = app.ok("Places?$apply=groupby((CountryName),aggregate($count as N))&$filter=CountryName eq 'France'").await;
+    assert_eq!(doc["value"][0]["N"], 1, "group by a description");
+    let r = app
+        .request(
+            Method::GET,
+            "Places?$apply=groupby((CountryName))&$orderby=CountryName desc",
+            &[("accept-language", "de")],
+            "",
+        )
+        .await;
+    assert_eq!(r.json()["value"][0]["CountryName"], "Deutschland");
+    assert_eq!(
+        app.status("Places?$apply=aggregate(FullName with max as M)")
+            .await,
+        400,
+        "transient"
+    );
+    let doc = app
+        .ok("Vehicles?$apply=aggregate(Adv.Truck/Payload with sum as P)")
+        .await;
+    assert_eq!(
+        doc["value"][0]["P"],
+        json!(7.5),
+        "a property of a joined derived table"
+    );
+    assert_eq!(
+        app.status("Lockeds?$apply=aggregate($count as N)").await,
+        400,
+        "RequiredProperties applies to aggregates"
+    );
+    let allowed = "Lockeds?$apply=filter(Code eq 'x')/aggregate($count as N)";
+    assert_eq!(
+        app.ok(allowed).await["value"][0]["N"],
+        1,
+        "a filter in the pipeline counts"
+    );
+    let banned = "Lockeds?$apply=filter(Code eq 'x' and Name eq 'a')/aggregate($count as N)";
+    assert_eq!(
+        app.status(banned).await,
+        400,
+        "NonFilterableProperties applies in the pipeline"
+    );
+}
+
 async fn annotations_in_metadata(app: App) {
     let xml = app.get("$metadata").await.text();
     assert!(xml.contains("Alias=\"Core\""), "{xml}");
@@ -558,6 +607,7 @@ mod run {
         geospatial,
         every_primitive_round_trips,
         capabilities,
+        aggregation_features,
         annotations_in_metadata,
         metadata_etag,
     );

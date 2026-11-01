@@ -1,6 +1,7 @@
 //! Resource paths and the top-level query string.
 
 use crate::UriError;
+use crate::apply::parse_apply;
 use crate::ast::*;
 use crate::expr::{Aliases, Scope, parse_expression, property_type};
 use crate::options::{OptionContext, apply_option, split_top_level};
@@ -64,12 +65,43 @@ pub fn parse_with(
         limits,
         expand_depth: 0,
     };
+    let mut scope = scope;
+    if let Some((_, text)) = raw.iter().find(|(n, _)| n == "$apply") {
+        let entity = match segments.last().map(Segment::target) {
+            Some(Target::EntityCollection(t)) => t,
+            Some(Target::Count) => match segments.iter().rev().nth(1).map(Segment::target) {
+                Some(Target::EntityCollection(t)) => t,
+                _ => {
+                    return Err(UriError::bad_request(
+                        "$apply needs a collection of entities",
+                    ));
+                }
+            },
+            _ => {
+                return Err(UriError::bad_request(
+                    "$apply needs a collection of entities",
+                ));
+            }
+        };
+        for unsupported in ["$expand", "$search"] {
+            if raw.iter().any(|(n, _)| n == unsupported) {
+                return Err(UriError::not_implemented(format!(
+                    "{unsupported} with $apply"
+                )));
+            }
+        }
+        let (steps, after) = parse_apply(&ctx, entity, text)?;
+        options.apply = steps;
+        scope = after;
+    }
     for (name, value) in &raw {
         if name.starts_with('$') {
             if raw.iter().filter(|(n, _)| n == name).count() > 1 {
                 return Err(UriError::bad_request(format!("{name} is given twice")));
             }
-            apply_option(&ctx, &scope, &mut options, name, value)?;
+            if name != "$apply" {
+                apply_option(&ctx, &scope, &mut options, name, value)?;
+            }
         } else if !name.starts_with('@') {
             options.custom.push((name.clone(), value.clone()));
         }

@@ -1,10 +1,12 @@
 //! Expression parser for `$filter`, `$orderby` and function arguments, binding as it goes.
 
 use crate::UriError;
+use crate::apply::ApplyScope;
 use crate::ast::*;
 use crate::lexer::{Token, tokenize};
 use odatabase_edm::{Model, PrimitiveKind, TypeKind, Value};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Named parameter aliases supplied by the query string, already parsed to expressions.
 pub type Aliases = HashMap<String, Expr>;
@@ -14,6 +16,8 @@ pub type Aliases = HashMap<String, Expr>;
 pub enum Scope {
     Entity(String),
     Complex(String),
+    /// The output of a `$apply` pipeline.
+    Applied(Arc<ApplyScope>),
     /// No implicit resource: paths are errors, as in function call arguments.
     None,
 }
@@ -579,11 +583,49 @@ impl ExprParser<'_> {
         match &self.scope {
             Scope::Entity(n) => Ok(ExprType::Entity(n.clone())),
             Scope::Complex(n) => Ok(ExprType::Complex(n.clone())),
-            Scope::None => Err(UriError::bad_request("no resource in scope")),
+            Scope::Applied(a) if !a.aggregated => Ok(ExprType::Entity(a.entity.clone())),
+            Scope::Applied(_) | Scope::None => Err(UriError::bad_request("no resource in scope")),
         }
     }
 
+    /// Resolves a name against the output of a `$apply` pipeline.
+    fn applied_path(&mut self, a: &ApplyScope, first: &str) -> Result<Option<Expr>, UriError> {
+        if let Some((name, ty)) = a.computed.iter().find(|(n, _)| n == first) {
+            return Ok(Some(Expr::Computed(name.clone(), ty.clone())));
+        }
+        if !a.aggregated {
+            return Ok(None);
+        }
+        let mut names = vec![first.to_owned()];
+        while self.accept(&Token::Slash) {
+            let Some(Token::Ident(name)) = self.peek().cloned() else {
+                return Err(UriError::bad_request("expected a path segment"));
+            };
+            self.pos += 1;
+            names.push(name);
+        }
+        let column = a.columns.iter().find(|c| c.path == names).ok_or_else(|| {
+            UriError::bad_request(format!(
+                "{} is not in the aggregated result",
+                names.join("/")
+            ))
+        })?;
+        Ok(Some(Expr::Path(Path {
+            root: PathRoot::It,
+            steps: names.into_iter().map(Step::Property).collect(),
+            ty: column.ty.clone(),
+        })))
+    }
+
     fn path(&mut self, first: &str) -> Result<Expr, UriError> {
+        if let Scope::Applied(a) = &self.scope {
+            let a = a.clone();
+            if !self.vars.iter().any(|(n, _)| n == first)
+                && let Some(e) = self.applied_path(&a, first)?
+            {
+                return Ok(e);
+            }
+        }
         let var = self.vars.iter().rev().find(|(n, _)| n == first).cloned();
         let (root, mut ty, mut steps) = if let Some((name, ty)) = var {
             (PathRoot::Var(name), ty, Vec::new())

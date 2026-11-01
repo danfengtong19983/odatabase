@@ -3,13 +3,13 @@
 use crate::format::{Format, metadata_as_json};
 use crate::json::{Writer, etag_header};
 use crate::paging::PageRequest;
-use crate::url::{entity_id, next_query, select_list, set_path};
+use crate::url::{aggregated_list, computed_list, entity_id, next_query, select_list, set_path};
 use crate::{ODataError, ODataRequest, ODataResponse, Service};
 use http::{HeaderValue, StatusCode, header};
 use odatabase_edm::{TypeKind, to_csdl_json, to_csdl_xml};
 use odatabase_sql::{
-    Node, Page, QueryContext, ReadRequest, Record, Session, count_collection, read_collection,
-    read_columns, read_entities,
+    Node, Page, QueryContext, ReadRequest, Record, Session, count_collection, read_aggregated,
+    read_collection, read_columns, read_entities,
 };
 use odatabase_uri::{ODataUri, QueryOptions, Segment, SelectItem, Target};
 use serde_json::{Map, Value as Json, json};
@@ -264,21 +264,22 @@ impl Service {
             (Some(top), true) => Some(top + 1),
             (top, _) => top,
         };
-        let mut records = read_entities(
-            &ctx,
-            session,
-            ReadRequest {
+        let window = Page {
+            top: fetch,
+            skip: page.skip,
+        };
+        let mut records = if o.is_aggregated() {
+            read_aggregated(&ctx, session, &uri.path, type_name, o, window).await?
+        } else {
+            let read = ReadRequest {
                 segments: &uri.path,
                 type_name,
                 options: o,
-                page: Page {
-                    top: fetch,
-                    skip: page.skip,
-                },
+                page: window,
                 limits: self.limits(),
-            },
-        )
-        .await?;
+            };
+            read_entities(&ctx, session, read).await?
+        };
         crate::transient::apply(&self.inner, &mut records);
         let has_more =
             page.next.is_some() && page.top.is_some_and(|top| records.len() as u64 > top);
@@ -299,7 +300,10 @@ impl Service {
         }
         let items: Vec<Json> = records
             .iter()
-            .map(|r| Json::Object(w.entity(r, type_name)))
+            .map(|r| match o.is_aggregated() {
+                true => Json::Object(w.aggregated(r, type_name)),
+                false => Json::Object(w.entity(r, type_name)),
+            })
             .collect();
         body.insert("value".into(), items.into());
         if has_more && let Some(next) = &page.next {
@@ -332,7 +336,13 @@ impl Service {
     fn context_collection(&self, req: &ODataRequest, t: &str, o: &QueryOptions) -> String {
         let m = &self.inner.model;
         match set_path(m, t) {
-            Some(set) => format!("{}/$metadata#{set}{}", req.root, select_list(o)),
+            Some(set) if o.is_aggregated() => {
+                format!("{}/$metadata#{set}{}", req.root, aggregated_list(o))
+            }
+            Some(set) => {
+                let list = computed_list(o).unwrap_or_else(|| select_list(o));
+                format!("{}/$metadata#{set}{list}", req.root)
+            }
             None => format!("{}/$metadata#Collection({})", req.root, m.qualified(t)),
         }
     }

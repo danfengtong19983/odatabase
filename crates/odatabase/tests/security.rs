@@ -322,7 +322,69 @@ async fn group_visibility(app: App) {
     assert_eq!(admin.column("Archive?$orderby=Id", "Id").await.len(), 3);
 }
 
+async fn aggregates_respect_protection(app: App) {
+    let count = "Secrets?$apply=aggregate($count as N)";
+    assert_eq!(
+        app.status(count).await,
+        403,
+        "a missing claim denies aggregates too"
+    );
+    let user = as_user(&app, acme());
+    assert_eq!(
+        user.ok(count).await["value"][0]["N"],
+        1,
+        "only permitted rows are counted"
+    );
+    let total = "Secrets?$apply=aggregate(Level with sum as T)";
+    assert_eq!(user.ok(total).await["value"][0]["T"], 1);
+    let groups = user
+        .ok("Secrets?$apply=groupby((Tenant),aggregate($count as N))")
+        .await;
+    assert_eq!(
+        groups["value"].as_array().unwrap().len(),
+        1,
+        "no other tenant appears"
+    );
+    assert_eq!(
+        user.ok("Holders('1')/Secrets?$apply=aggregate($count as N)")
+            .await["value"][0]["N"],
+        1
+    );
+    let through = "Secrets?$apply=groupby((Partner/Id),aggregate($count as N))";
+    assert_eq!(user.status(through).await, 200);
+
+    let hidden = [
+        "Secrets?$apply=aggregate(Salary with sum as T)",
+        "Secrets?$apply=groupby((Salary))",
+        "Secrets?$apply=filter(Salary gt 1)/aggregate($count as N)",
+        "Secrets?$apply=compute(Salary mul 1 as S)/aggregate(S with sum as T)",
+        "Secrets?$apply=compute(Salary mul 1 as S)&$select=Id",
+    ];
+    for uri in hidden {
+        assert_eq!(user.status(uri).await, 403, "{uri}");
+    }
+    let hr = as_user(&app, acme().with_group("hr"));
+    let doc = hr
+        .ok("Secrets?$apply=aggregate(Salary with sum as T)")
+        .await;
+    assert_eq!(
+        doc["value"][0]["T"], 100,
+        "visible, and still limited to permitted rows"
+    );
+    assert_eq!(
+        user.status("Archive?$apply=aggregate($count as N)").await,
+        403
+    );
+}
+
 async fn query_extensions(app: App) {
+    let active = "ActivePartners?$apply=aggregate($count as N)";
+    assert_eq!(
+        app.ok(active).await["value"][0]["N"],
+        3,
+        "extensions apply to aggregates"
+    );
+
     assert_eq!(app.ids("ActivePartners").await, ["1", "3", "4"]);
     assert_eq!(app.status("ActivePartners('2')").await, 404);
     let admin = as_user(&app, Claims::default().with_group("admin"));
@@ -364,6 +426,7 @@ mod run {
         protection_follows_every_path,
         protection_on_writes,
         group_visibility,
+        aggregates_respect_protection,
         query_extensions,
         batches_keep_the_caller,
     );

@@ -277,6 +277,36 @@ try
 }
 catch (Exception e) { Report("multipart $batch", e); }
 
+// $apply: Microsoft's own grammar must accept each pipeline, and the server must answer it.
+foreach (var query in new[] {
+    "aggregate(Rating with sum as Total)",
+    "aggregate(Rating with average as Mean,Rating with min as Low,Rating with max as High)",
+    "aggregate(Rating with countdistinct as Kinds,$count as Rows)",
+    "aggregate(Rating mul 2 with sum as Twice)",
+    "groupby((Abc))",
+    "groupby((Address/City,Active),aggregate($count as Rows))",
+    "groupby((Owner/Name),aggregate(Rating with sum as Total))",
+    "filter(Active)/groupby((Address/City),aggregate(Revenue with sum as Total))/filter(Total gt 20)",
+    "groupby((Abc),aggregate($count as Rows))/groupby((Rows),aggregate($count as Groups))",
+    "compute(Rating mul 2 as Twice)/aggregate(Twice with sum as Total)",
+    "compute(year(Founded) as Y)/groupby((Y),aggregate($count as Rows))",
+    "groupby((Abc),aggregate(Rating with sum as Total))/compute(Total mul 2 as Doubled)",
+}) {
+    var url = "BusinessPartners?$apply=" + query;
+    try
+    {
+        var uri = new Uri($"{root}/BusinessPartners?$apply={Uri.EscapeDataString(query)}");
+        var parser = new Microsoft.OData.UriParser.ODataUriParser(model, new Uri(root + "/"), uri);
+        var parsed = parser.ParseApply();
+        var r = await Send(HttpMethod.Get, uri.ToString());
+        r.Ensure(url);
+        var doc = System.Text.Json.JsonDocument.Parse(r.Body);
+        var rows = doc.RootElement.GetProperty("value").GetArrayLength();
+        Report($"{url} ({parsed.Transformations.Count()} steps, {rows} rows)");
+    }
+    catch (Exception e) { Report(url, e); }
+}
+
 // Errors
 try
 {

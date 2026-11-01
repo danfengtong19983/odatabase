@@ -56,6 +56,7 @@ upper camel case (`FirstName`). Set `name` or `column` to override either.
 | Model | Complex types, enums and flags, collection properties, singletons, single-table and joined inheritance, media streams, geospatial properties (stored as GeoJSON) |
 | Mapped properties | Language-dependent descriptions, transient properties with calculators |
 | Reads | Key and navigation paths, `$filter` with lambdas and built-in functions, `$select`, `$orderby`, `$top`, `$skip`, `$count`, `$search`, `$ref`, `$value`, casts |
+| `$apply` | `aggregate`, `groupby`, `filter`, `search`, `compute`, `orderby`, `top`, `skip` and `identity` in pipelines, with `sum`, `min`, `max`, `average`, `countdistinct` and `$count` |
 | `$expand` | Nested options, per-parent `$top` and `$skip`, `$levels`, `/$count`, `/$ref`, `*`, join tables |
 | Writes | POST, PATCH, PUT, DELETE, property and `$value` updates, deep insert, `@odata.bind`, `$ref` links, ETag preconditions, `Prefer: return` |
 | `$batch` | Multipart and JSON formats, atomic change sets, `Content-ID` references, `continue-on-error` |
@@ -103,13 +104,19 @@ These return a status rather than a wrong result:
 
 | Feature | Response |
 |---|---|
-| `$apply`, `$compute`, `$all`, `$crossjoin`, `$entity`, async requests | 501 |
+| `$compute`, `$all`, `$crossjoin`, `$entity`, async requests | 501 |
+| In `$apply`: `concat`, `nest`, `join`, `expand`, `rollup`, `topcount` and similar, custom aggregates, `from`, `Nav/$count` | 501 |
+| `$expand` or `$search` next to `$apply`, and `$apply` inside `$expand` | 501 |
 | Date and duration arithmetic, `maxdatetime`, `mindatetime`, `geo.*`, `hassubset` in `$filter` | 501 |
 | Deep update (nested entities in PATCH or PUT) | 501 |
 | Navigation properties inside complex types | 501 |
 | Entity-typed operation parameters | 501 |
 | Query options on the result of a handler-based operation, other than `$select` and `$expand` | 501 |
 | Data formats other than JSON | 406 |
+
+`groupby` keys and aggregated values can follow to-one navigation only: a to-many path is a 400.
+`orderby`, `top` and `skip` transformations need an aggregation later in the pipeline. `$metadata`
+doesn't announce `$apply` through the `Aggregation.ApplySupported` annotation yet.
 
 `$levels=max` stops at `ExpandLimits::max_levels`, 8 by default. `$expand` has no server-driven
 paging, and `PagingProvider` applies to top-level collections only. Transient properties work

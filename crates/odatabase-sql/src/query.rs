@@ -1,5 +1,6 @@
 //! Builds and runs the reads of a request: entity sets, navigation paths and counts.
 
+use crate::aggregate::{count_aggregated, decode_for};
 use crate::db::ColumnDecode;
 use crate::expand::{ExpandLimits, expand_records};
 use crate::filter::{Frame, FrameKind, Translator, and_all, col};
@@ -7,7 +8,9 @@ use crate::record::{Node, Record};
 use crate::search::search_condition;
 use crate::{QueryContext, QueryError, Session};
 use odatabase_edm::{Inheritance, Model, Property, TypeKind, Value};
-use odatabase_uri::{OrderItem, QueryOptions, Segment, SelectItem};
+use odatabase_uri::{
+    ComputeItem, Expr as UExpr, OrderItem, QueryOptions, Segment, SelectItem, Transformation,
+};
 use sea_query::{Alias, Asterisk, Expr, ExprTrait, NullOrdering, Order, Query, SelectStatement};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -591,6 +594,30 @@ pub fn apply_conditions(
     type_name: &str,
     options: &QueryOptions,
 ) -> Result<(), QueryError> {
+    for t in &options.apply {
+        match t {
+            Transformation::Identity => {}
+            Transformation::Filter(e) => {
+                let e = tr.expr(frame, e)?;
+                sel.and_where(e);
+            }
+            Transformation::Search(s) => {
+                let e = search_condition(tr, frame, type_name, s)?;
+                sel.and_where(e);
+            }
+            Transformation::Compute(items) => {
+                for item in items {
+                    let e = tr.expr(frame, &item.expr)?;
+                    tr.computed.push((item.alias.clone(), e));
+                }
+            }
+            _ => {
+                return Err(QueryError::not_implemented(
+                    "orderby, top and skip transformations without an aggregation",
+                ));
+            }
+        }
+    }
     if let Some(f) = &options.filter {
         let e = tr.expr(frame, f)?;
         sel.and_where(e);
@@ -655,6 +682,33 @@ fn build_read(
         layout = es.layout;
     }
     apply_conditions(&mut tr, &mut sel, &frame, req.type_name, req.options)?;
+    {
+        let mut es = EntitySelect {
+            tr: &mut tr,
+            sel: &mut sel,
+            layout: std::mem::take(&mut layout),
+        };
+        for item in req
+            .options
+            .apply
+            .iter()
+            .filter_map(computed_items)
+            .flatten()
+        {
+            let alias = UExpr::Computed(item.alias.clone(), item.ty.clone());
+            let e = es.tr.expr(&frame, &alias)?;
+            es.add(
+                e,
+                Column {
+                    path: vec![item.alias.clone()],
+                    decode: decode_for(&item.ty),
+                    only_for: None,
+                    hidden: None,
+                },
+            );
+        }
+        layout = es.layout;
+    }
     apply_order(
         &mut tr,
         &mut sel,
@@ -672,6 +726,13 @@ fn build_read(
         };
     }
     Ok((sel, layout))
+}
+
+fn computed_items(t: &Transformation) -> Option<&Vec<ComputeItem>> {
+    match t {
+        Transformation::Compute(items) => Some(items),
+        _ => None,
+    }
 }
 
 /// Fetches rows, leaving hidden columns in their natural type.
@@ -697,6 +758,9 @@ pub async fn count_collection(
     type_name: &str,
     options: &QueryOptions,
 ) -> Result<i64, QueryError> {
+    if options.is_aggregated() {
+        return count_aggregated(ctx, session, segments, type_name, options).await;
+    }
     let mut tr = Translator::new(ctx.clone());
     let mut sel = Query::select();
     let frame = source(&mut tr, &mut sel, segments, type_name)?;

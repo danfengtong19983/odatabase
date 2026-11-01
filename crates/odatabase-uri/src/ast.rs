@@ -6,6 +6,48 @@ pub struct ODataUri {
     pub options: QueryOptions,
 }
 
+impl QueryOptions {
+    /// Whether `$apply` replaces entities with aggregated results.
+    pub fn is_aggregated(&self) -> bool {
+        self.apply.iter().any(|t| {
+            matches!(
+                t,
+                Transformation::Aggregate(_) | Transformation::GroupBy { .. }
+            )
+        })
+    }
+
+    /// The properties of an aggregated result, after the whole pipeline.
+    pub fn aggregated_columns(&self) -> Vec<ApplyColumn> {
+        let mut columns = Vec::new();
+        for t in &self.apply {
+            match t {
+                Transformation::Aggregate(items) => {
+                    columns = items.iter().map(Aggregation::column).collect();
+                }
+                Transformation::GroupBy { keys, aggregates } => {
+                    columns = keys
+                        .iter()
+                        .map(|k| ApplyColumn {
+                            path: k.path.clone(),
+                            ty: k.ty.clone(),
+                        })
+                        .collect();
+                    columns.extend(aggregates.iter().map(Aggregation::column));
+                }
+                Transformation::Compute(items) if !columns.is_empty() => {
+                    columns.extend(items.iter().map(|i| ApplyColumn {
+                        path: vec![i.alias.clone()],
+                        ty: i.ty.clone(),
+                    }));
+                }
+                _ => {}
+            }
+        }
+        columns
+    }
+}
+
 impl ODataUri {
     /// The type addressed by the full path.
     pub fn target(&self) -> &Target {
@@ -104,8 +146,76 @@ impl Segment {
     }
 }
 
+/// One step of a `$apply` pipeline.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Transformation {
+    Identity,
+    Filter(Expr),
+    Search(SearchExpr),
+    Compute(Vec<ComputeItem>),
+    Aggregate(Vec<Aggregation>),
+    GroupBy {
+        keys: Vec<GroupKey>,
+        aggregates: Vec<Aggregation>,
+    },
+    OrderBy(Vec<OrderItem>),
+    Top(u64),
+    Skip(u64),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ComputeItem {
+    pub expr: Expr,
+    pub alias: String,
+    pub ty: ExprType,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct GroupKey {
+    /// Where the key appears in the result. Several steps nest it.
+    pub path: Vec<String>,
+    pub expr: Expr,
+    pub ty: ExprType,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AggregateMethod {
+    Sum,
+    Min,
+    Max,
+    Average,
+    CountDistinct,
+    Count,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Aggregation {
+    pub alias: String,
+    pub method: AggregateMethod,
+    /// `None` for `$count`.
+    pub expr: Option<Expr>,
+    pub ty: ExprType,
+}
+
+impl Aggregation {
+    pub fn column(&self) -> ApplyColumn {
+        ApplyColumn {
+            path: vec![self.alias.clone()],
+            ty: self.ty.clone(),
+        }
+    }
+}
+
+/// A property of an aggregated result.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApplyColumn {
+    pub path: Vec<String>,
+    pub ty: ExprType,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct QueryOptions {
+    pub apply: Vec<Transformation>,
     pub filter: Option<Expr>,
     pub select: Option<Vec<SelectItem>>,
     pub expand: Vec<ExpandItem>,
@@ -297,6 +407,8 @@ pub enum Expr {
     },
     Cast(Box<Expr>, ExprType),
     IsOf(Option<Box<Expr>>, ExprType),
+    /// An alias from a `compute` transformation.
+    Computed(String, ExprType),
     /// A composable function called from an expression.
     Function {
         name: String,
@@ -327,7 +439,7 @@ impl Expr {
             },
             Self::Call(f, args) => call_type(*f, args),
             Self::Cast(_, t) => t.clone(),
-            Self::Function { ty, .. } => ty.clone(),
+            Self::Function { ty, .. } | Self::Computed(_, ty) => ty.clone(),
         }
     }
 }

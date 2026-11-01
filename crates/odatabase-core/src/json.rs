@@ -151,6 +151,27 @@ impl Writer<'_> {
         out
     }
 
+    /// Serializes a row of an aggregated result, which has no identity.
+    pub fn aggregated(&self, rec: &Record, type_name: &str) -> Map<String, Json> {
+        let none = self.format.metadata == MetadataLevel::None;
+        let mut out = Map::new();
+        if !none {
+            out.insert("@odata.id".into(), Json::Null);
+        }
+        for (name, node) in &rec.fields {
+            // Aliases are not in the model, so their type has to be stated.
+            if let Node::Value(v) = node
+                && !none
+                && self.model.property(type_name, name).is_none()
+                && let Some(t) = odata_type(v)
+            {
+                out.insert(format!("{name}@odata.type"), t.into());
+            }
+            out.insert(name.clone(), self.node(node));
+        }
+        out
+    }
+
     /// Serializes an expanded navigation against the type the navigation declares.
     fn related(&self, owner: &str, name: &str, node: &Node) -> Json {
         let declared = self

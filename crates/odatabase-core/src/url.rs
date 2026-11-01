@@ -2,7 +2,7 @@
 
 use odatabase_edm::{Model, Value};
 use odatabase_sql::Record;
-use odatabase_uri::{ExpandItem, QueryOptions, SelectItem};
+use odatabase_uri::{ExpandItem, QueryOptions, SelectItem, Transformation};
 
 /// The canonical key predicate of `rec`, such as `('a')` or `(Code=1,Id='a')`.
 pub fn key_predicate(model: &Model, type_name: &str, rec: &Record) -> Option<String> {
@@ -105,6 +105,43 @@ fn expand_entry(e: &ExpandItem) -> String {
     } else {
         format!("{name}{inner}")
     }
+}
+
+/// `(Country,Customer(Name),Total)`, the shape of an aggregated result.
+pub fn aggregated_list(options: &QueryOptions) -> String {
+    let mut items: Vec<(String, Vec<String>)> = Vec::new();
+    for c in options.aggregated_columns() {
+        let (first, rest) = c.path.split_first().expect("a column has a name");
+        let inner = rest.join("/");
+        match items.iter_mut().find(|(name, _)| name == first) {
+            Some((_, nested)) => nested.push(inner),
+            None if inner.is_empty() => items.push((first.clone(), Vec::new())),
+            None => items.push((first.clone(), vec![inner])),
+        }
+    }
+    let parts: Vec<String> = items
+        .iter()
+        .map(|(name, nested)| match nested.is_empty() {
+            true => name.clone(),
+            false => format!("{name}({})", nested.join(",")),
+        })
+        .collect();
+    format!("({})", parts.join(","))
+}
+
+/// `(*,Alias)` for entities that `$apply` extended with computed properties.
+pub fn computed_list(options: &QueryOptions) -> Option<String> {
+    let aliases: Vec<&str> = options
+        .apply
+        .iter()
+        .filter_map(|t| match t {
+            Transformation::Compute(items) => Some(items),
+            _ => None,
+        })
+        .flatten()
+        .map(|i| i.alias.as_str())
+        .collect();
+    (!aliases.is_empty()).then(|| format!("(*,{})", aliases.join(",")))
 }
 
 /// The query string of a next link: the original options with a new `$skiptoken`.

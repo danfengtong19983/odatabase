@@ -69,7 +69,8 @@ pub fn apply_option(
         "$format" => o.format = Some(value.to_owned()),
         // The target of `DELETE .../$ref?$id=...`, read by the write path.
         "$id" => o.custom.push((name.to_owned(), value.to_owned())),
-        "$apply" | "$compute" | "$schemaversion" => {
+        "$apply" => return Err(UriError::not_implemented("$apply inside $expand")),
+        "$compute" | "$schemaversion" => {
             return Err(UriError::not_implemented(format!(
                 "{name} is not supported"
             )));
@@ -84,7 +85,7 @@ pub fn apply_option(
 }
 
 /// Databases take limits as signed 64-bit numbers, so larger values are invalid here.
-fn number(name: &str, value: &str) -> Result<u64, UriError> {
+pub fn number(name: &str, value: &str) -> Result<u64, UriError> {
     value
         .parse::<u64>()
         .ok()
@@ -92,7 +93,11 @@ fn number(name: &str, value: &str) -> Result<u64, UriError> {
         .ok_or_else(|| UriError::bad_request(format!("{name} must be a non-negative integer")))
 }
 
-fn orderby(ctx: &OptionContext, scope: &Scope, value: &str) -> Result<Vec<OrderItem>, UriError> {
+pub fn orderby(
+    ctx: &OptionContext,
+    scope: &Scope,
+    value: &str,
+) -> Result<Vec<OrderItem>, UriError> {
     let mut items = Vec::new();
     for part in split_top_level(value, ',') {
         let part = part.trim_matches([' ', '+']);
@@ -150,6 +155,18 @@ fn validate_select_path(
     let mut current = match scope {
         Scope::Entity(n) => ExprType::Entity(n.clone()),
         Scope::Complex(n) => ExprType::Complex(n.clone()),
+        Scope::Applied(a) if a.aggregated => {
+            if a.columns.iter().any(|c| c.path.starts_with(steps)) {
+                return Ok(());
+            }
+            return Err(unknown(&steps.join("/")));
+        }
+        Scope::Applied(a) => {
+            if steps.len() == 1 && a.computed.iter().any(|(n, _)| *n == steps[0]) {
+                return Ok(());
+            }
+            ExprType::Entity(a.entity.clone())
+        }
         Scope::None => return Err(UriError::bad_request("$select needs a structured resource")),
     };
     for step in steps {

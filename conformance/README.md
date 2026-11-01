@@ -7,9 +7,9 @@ and runs the client in Docker. They aren't part of `cargo test`.
 
 | Script | Client | What it checks |
 |---|---|---|
-| `run-dotnet.sh` | Microsoft.OData.Core 8 | Strict `$metadata` and payload validation, context URLs, multipart `$batch` |
+| `run-dotnet.sh` | Microsoft.OData.Core 8 | Strict `$metadata` and payload validation, context URLs, multipart `$batch`, `$apply` grammar |
 | `run-java.sh` | Apache Olingo client 5 | Its own URL encoding, CRUD, ETags, operations, `$batch` |
-| `run-ui5.sh` | SAPUI5 OData V4 model in headless Chromium | Metadata model, `$batch` traffic, updates with `If-Match`, operations |
+| `run-ui5.sh` | SAPUI5 OData V4 model in headless Chromium | Metadata model, `$batch` traffic, updates with `If-Match`, operations, `$apply` from `$$aggregation` |
 | `run-python.sh` | python-odata | Reflection from `$metadata`, queries, writes |
 | `run-openapi.sh` | OASIS odata-openapi | Conversion of `$metadata` to OpenAPI |
 

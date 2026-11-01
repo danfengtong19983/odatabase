@@ -3,6 +3,7 @@
 //! Identifiers come from the model and literals are bound parameters, so no request text
 //! reaches the SQL string.
 
+mod aggregate;
 mod context;
 mod db;
 mod dialect;
@@ -15,6 +16,7 @@ mod search;
 mod values;
 mod write;
 
+pub use aggregate::read_aggregated;
 pub use context::{ClaimValue, Claims, QueryContext, QueryExtension, TableRef};
 pub use db::{ColumnDecode, Database, Session, Tx};
 pub use dialect::Dialect;

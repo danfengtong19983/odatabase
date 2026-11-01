@@ -12,7 +12,12 @@ const html = `<!doctype html><html><head><script id="sap-ui-bootstrap"
 const browser = await chromium.launch();
 const page = await browser.newPage({ locale: "en-US" });
 const sent = [];
-page.on("request", (r) => { if (r.url().startsWith(root)) sent.push(`${r.method()} ${r.url().slice(root.length)}`); });
+const applied = [];
+page.on("request", (r) => {
+  if (!r.url().startsWith(root)) return;
+  sent.push(`${r.method()} ${r.url().slice(root.length)}`);
+  for (const m of (r.postData() ?? "").matchAll(/^GET (\S*apply\S*) HTTP/gm)) applied.push(decodeURIComponent(m[1]));
+});
 page.on("console", (m) => { if (m.type() === "error") console.log("console:", m.text().slice(0, 300)); });
 await page.route(page_url, (r) => r.fulfill({ contentType: "text/html", body: html }));
 await page.goto(page_url);
@@ -95,6 +100,46 @@ const results = await page.evaluate(async (serviceUrl) => {
     await a.invoke();
     return a.getBoundContext().getObject().value;
   });
+  await check("$apply as a binding parameter", async () => {
+    const c = await list("/BusinessPartners", {
+      $apply: "groupby((Abc),aggregate(Rating with sum as Total))", $orderby: "Abc",
+    }).requestContexts(0, 10);
+    const row = c.find((x) => x.getObject().Abc === "A").getObject();
+    if (Number(row.Total) !== 5) throw new Error(JSON.stringify(row));
+    return c.length + " groups";
+  });
+  await check("$$aggregation generates $apply", async () => {
+    const b = list("/BusinessPartners", {
+      $$aggregation: {
+        group: { Abc: {} },
+        aggregate: { Total: { name: "Rating", with: "sum" } },
+      },
+      $orderby: "Abc",
+    });
+    const c = await b.requestContexts(0, 10);
+    const row = c.find((x) => x.getObject().Abc === "A").getObject();
+    if (Number(row.Total) !== 5) throw new Error(JSON.stringify(row));
+    return c.length + " groups";
+  });
+  await check("$$aggregation with a filter on an aggregate", async () => {
+    const b = list("/BusinessPartners", {
+      $$aggregation: {
+        group: { Active: {} },
+        aggregate: { Total: { name: "Rating", with: "sum" } },
+      },
+      $filter: "Total gt 2",
+    });
+    return (await b.requestContexts(0, 10)).length + " groups";
+  });
+  await check("$$aggregation with a count of groups", async () => {
+    const b = list("/BusinessPartners", {
+      $count: true,
+      $$aggregation: { group: { Abc: {} } },
+    });
+    const c = await b.requestContexts(0, 2);
+    await new Promise((r) => setTimeout(r, 200));
+    return c.length + " of " + b.getLength();
+  });
   await check("entity read failure surfaces as an OData error", async () => {
     try { await model.bindContext("/BusinessPartners('nope')").requestObject(); }
     catch (e) { if (e.status === 404) return e.message; throw e; }
@@ -110,5 +155,6 @@ for (const r of results) {
 }
 console.log(`\n${results.length - failed} passed, ${failed} failed`);
 console.log("\nrequests:\n  " + [...new Set(sent)].slice(0, 12).join("\n  "));
+console.log("\n$apply sent inside batches:\n  " + [...new Set(applied)].join("\n  "));
 await browser.close();
 process.exit(failed ? 1 : 0);

@@ -3,7 +3,7 @@
 use crate::ODataError;
 use http::Method;
 use odatabase_edm::{Annotation, AnnotationValue, Model};
-use odatabase_uri::{Expr, ODataUri, OrderItem, Path, PathRoot, Step, Target};
+use odatabase_uri::{Expr, ODataUri, OrderItem, Path, PathRoot, Step, Target, Transformation};
 
 fn is_term(a: &Annotation, name: &str) -> bool {
     a.term == format!("Capabilities.{name}")
@@ -77,7 +77,7 @@ fn property_path(p: &Path) -> Option<String> {
 /// Calls `visit` on every path in `e`.
 fn each_path(e: &Expr, visit: &mut dyn FnMut(&Path)) {
     match e {
-        Expr::Literal(_) => {}
+        Expr::Literal(_) | Expr::Computed(..) => {}
         Expr::Path(p) => visit(p),
         Expr::Not(x) | Expr::Negate(x) | Expr::Cast(x, _) => each_path(x, visit),
         Expr::Binary(_, l, r) => {
@@ -107,8 +107,17 @@ fn each_path(e: &Expr, visit: &mut dyn FnMut(&Path)) {
 /// Checks the options of a read against the restrictions of `type_name`.
 pub fn check_read(model: &Model, type_name: &str, uri: &ODataUri) -> Result<(), ODataError> {
     let o = &uri.options;
+    // Filters inside `$apply` must obey the same restrictions as `$filter`.
+    let filters: Vec<&Expr> = o
+        .filter
+        .iter()
+        .chain(o.apply.iter().filter_map(|t| match t {
+            Transformation::Filter(e) => Some(e),
+            _ => None,
+        }))
+        .collect();
     if let Some(r) = restriction(model, type_name, "FilterRestrictions") {
-        if o.filter.is_some() && flag(r, "Filterable") == Some(false) {
+        if !filters.is_empty() && flag(r, "Filterable") == Some(false) {
             return Err(ODataError::bad_request(format!(
                 "{type_name} cannot be filtered"
             )));
@@ -117,13 +126,13 @@ pub fn check_read(model: &Model, type_name: &str, uri: &ODataUri) -> Result<(), 
         if !keyed || matches!(uri.target(), Target::Count) {
             let required = paths(r, "RequiredProperties");
             let needs_filter = flag(r, "RequiresFilter") == Some(true) || !required.is_empty();
-            if needs_filter && o.filter.is_none() {
+            if needs_filter && filters.is_empty() {
                 return Err(ODataError::bad_request(format!(
                     "{type_name} requires a $filter"
                 )));
             }
             let mut used = Vec::new();
-            if let Some(f) = &o.filter {
+            for f in &filters {
                 each_path(f, &mut |p| used.extend(property_path(p)));
             }
             for name in required {
@@ -132,7 +141,7 @@ pub fn check_read(model: &Model, type_name: &str, uri: &ODataUri) -> Result<(), 
                 }
             }
         }
-        if let Some(f) = &o.filter {
+        for f in &filters {
             let banned = paths(r, "NonFilterableProperties");
             let mut violation = None;
             each_path(f, &mut |p| {

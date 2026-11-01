@@ -30,6 +30,10 @@ pub enum FrameKind {
     Scalar {
         column: String,
     },
+    /// A derived table of `$apply`: property paths and the columns holding them.
+    Aggregated {
+        columns: Vec<(String, String)>,
+    },
 }
 
 pub fn col(alias: &str, column: &str) -> Expr {
@@ -81,6 +85,8 @@ pub fn and_all(items: impl IntoIterator<Item = Expr>) -> Option<Expr> {
 /// Translates expressions and issues the table aliases of one statement tree.
 pub struct Translator<'a> {
     pub ctx: QueryContext<'a>,
+    /// Aliases from `compute`, in terms of the current statement.
+    pub computed: Vec<(String, Expr)>,
     next_alias: u32,
     vars: Vec<(String, Frame)>,
 }
@@ -89,6 +95,7 @@ impl<'a> Translator<'a> {
     pub fn new(ctx: QueryContext<'a>) -> Self {
         Self {
             ctx,
+            computed: Vec::new(),
             next_alias: 0,
             vars: Vec::new(),
         }
@@ -349,6 +356,9 @@ impl<'a> Translator<'a> {
                 Ok(col(&frame.alias, &format!("{prefix}{}", p.column)))
             }
             FrameKind::Scalar { column } => Ok(col(&frame.alias, column)),
+            FrameKind::Aggregated { .. } => {
+                Err(QueryError::internal("an aggregated row has no properties"))
+            }
         }
     }
 
@@ -458,6 +468,12 @@ impl<'a> Translator<'a> {
             UExpr::Cast(value, ty) => self.cast(it, value, ty),
             UExpr::IsOf(value, ty) => self.isof(it, value.as_deref(), ty),
             UExpr::Function { name, args, .. } => self.function(it, name, args),
+            UExpr::Computed(name, _) => self
+                .computed
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, e)| e.clone())
+                .ok_or_else(|| QueryError::internal(format!("{name} was not computed"))),
         }
     }
 
@@ -486,7 +502,7 @@ impl<'a> Translator<'a> {
             FrameKind::Complex { type_name, .. } => model
                 .complex_type(type_name)
                 .and_then(|c| c.properties.iter().find(|p| p.name == name)),
-            FrameKind::Scalar { .. } => None,
+            FrameKind::Scalar { .. } | FrameKind::Aggregated { .. } => None,
         };
         let p = p.ok_or_else(|| QueryError::internal(format!("unknown property {name}")))?;
         if !self.ctx.claims.sees(&p.visible_for) {
@@ -512,6 +528,20 @@ impl<'a> Translator<'a> {
 
     /// Translates path steps into a value, nesting a subquery at each navigation.
     fn walk(&mut self, frame: &Frame, steps: &[Step]) -> Result<Expr, QueryError> {
+        if let FrameKind::Aggregated { columns } = &frame.kind {
+            let names: Vec<&str> = steps
+                .iter()
+                .filter_map(|s| match s {
+                    Step::Property(n) => Some(n.as_str()),
+                    _ => None,
+                })
+                .collect();
+            let key = names.join("/");
+            let found = columns.iter().find(|(path, _)| *path == key);
+            let (_, column) = found
+                .ok_or_else(|| QueryError::internal(format!("{key} is not a result column")))?;
+            return Ok(col(&frame.alias, column));
+        }
         let Some((step, rest)) = steps.split_first() else {
             return match &frame.kind {
                 FrameKind::Scalar { column } => Ok(col(&frame.alias, column)),

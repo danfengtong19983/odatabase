@@ -3,6 +3,7 @@
 //! Parsing and binding are one pass: an [`ODataUri`] that exists refers only to elements of
 //! the model, so later stages never see user-chosen identifiers.
 
+mod apply;
 mod ast;
 mod error;
 mod expr;
