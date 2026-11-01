@@ -20,7 +20,9 @@ pub use db::{ColumnDecode, Database, Session, Tx};
 pub use dialect::Dialect;
 pub use error::QueryError;
 pub use expand::ExpandLimits;
-pub use query::{Page, ReadRequest, count_collection, read_collection, read_entities};
+pub use query::{
+    Page, ReadRequest, call_scalar, count_collection, literal_args, read_collection, read_entities,
+};
 pub use record::{Node, Record, Refs};
 pub use sea_query;
 pub use values::{from_sea_string, to_sea};

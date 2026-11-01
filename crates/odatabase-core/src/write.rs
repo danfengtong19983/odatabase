@@ -271,6 +271,7 @@ impl Service {
         session: &Session,
     ) -> Result<ODataResponse, ODataError> {
         match (&req.method, uri.target()) {
+            (&Method::POST, Target::ActionResult) => self.call_action(req, uri, session).await,
             (&Method::POST, Target::EntityCollection(t)) => self.create(req, uri, t, session).await,
             (&Method::POST, Target::Ref { .. }) => self.add_link(req, uri, session).await,
             (&Method::PATCH | &Method::PUT, Target::Entity(t)) => {
@@ -722,6 +723,16 @@ impl Service {
     }
 
     /// The key of the entity at `path`, respecting row restrictions.
+    pub(crate) async fn entity_key_of(
+        &self,
+        req: &ODataRequest,
+        session: &Session,
+        path: &[Segment],
+        type_name: &str,
+    ) -> Result<EntityKey, ODataError> {
+        self.entity_key(req, session, path, type_name).await
+    }
+
     async fn entity_key(
         &self,
         req: &ODataRequest,

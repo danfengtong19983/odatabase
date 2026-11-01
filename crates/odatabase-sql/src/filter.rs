@@ -169,6 +169,40 @@ impl<'a> Translator<'a> {
         Ok(frame)
     }
 
+    /// Like [`Translator::enter`], reading from a table function instead of a table.
+    pub fn enter_function(
+        &mut self,
+        sel: &mut SelectStatement,
+        type_name: &str,
+        function: &str,
+        args: &[Value],
+    ) -> Result<Frame, QueryError> {
+        let model = self.ctx.model;
+        let t = model
+            .entity_type(type_name)
+            .ok_or_else(|| QueryError::internal(format!("unknown type {type_name}")))?;
+        if !self.ctx.claims.sees(&t.visible_for) {
+            return Err(QueryError::forbidden(format!(
+                "{type_name} is not accessible"
+            )));
+        }
+        let mut call = sea_query::Func::cust(Alias::new(function));
+        for a in args {
+            call = call.arg(self.literal(a)?);
+        }
+        let alias = self.alias();
+        sel.from_function(call, Alias::new(alias.as_str()));
+        let frame = Frame {
+            alias,
+            kind: FrameKind::Entity(t.name.clone()),
+            joined: Vec::new(),
+        };
+        for cond in self.row_restrictions(&frame, type_name)? {
+            sel.and_where(cond);
+        }
+        Ok(frame)
+    }
+
     /// `kind IN (...)` for the type and all types derived from it.
     fn discriminator(&self, frame: &Frame, t: &EntityType) -> Result<Option<Expr>, QueryError> {
         let model = self.ctx.model;

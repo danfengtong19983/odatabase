@@ -433,10 +433,28 @@ pub fn source(
     let nav_at = segments
         .iter()
         .rposition(|s| matches!(s, Segment::Navigation { .. }));
-    let frame = tr.enter(sel, type_name)?;
     let tail = match nav_at {
         Some(i) => &segments[i + 1..],
         None => segments,
+    };
+    let frame = match tail.first() {
+        Some(Segment::Function {
+            name,
+            overload,
+            args,
+            ..
+        }) => {
+            let op = &model.functions[name][*overload];
+            let db_name = op.database_function.as_deref().ok_or_else(|| {
+                QueryError::not_implemented(format!("{name} cannot be composed with"))
+            })?;
+            if tr.ctx.dialect == crate::Dialect::Sqlite {
+                return Err(QueryError::not_implemented("table functions on SQLite"));
+            }
+            let values = literal_args(name, op, args)?;
+            tr.enter_function(sel, type_name, db_name, &values)?
+        }
+        _ => tr.enter(sel, type_name)?,
     };
     for seg in tail {
         if let Segment::Key { values, target } = seg {
@@ -471,6 +489,48 @@ pub fn source(
         sel.and_where(Expr::exists(parent));
     }
     Ok(frame)
+}
+
+/// Function arguments as literals, in declaration order.
+pub fn literal_args(
+    name: &str,
+    op: &odatabase_edm::Operation,
+    args: &[(String, odatabase_uri::Expr)],
+) -> Result<Vec<Value>, QueryError> {
+    let params = &op.parameters[usize::from(op.is_bound)..];
+    params
+        .iter()
+        .map(|p| match args.iter().find(|(n, _)| *n == p.name) {
+            Some((_, odatabase_uri::Expr::Literal(v))) => Ok(v.clone()),
+            _ => Err(QueryError::bad_request(format!(
+                "{name}: {} must be a literal",
+                p.name
+            ))),
+        })
+        .collect()
+}
+
+/// `SELECT function(args)`: a scalar database function.
+pub async fn call_scalar(
+    ctx: &QueryContext<'_>,
+    session: &Session,
+    function: &str,
+    args: &[Value],
+    result: ColumnDecode,
+) -> Result<Value, QueryError> {
+    let tr = Translator::new(ctx.clone());
+    let mut call = sea_query::Func::cust(Alias::new(function));
+    for a in args {
+        call = call.arg(tr.literal(a)?);
+    }
+    let mut sel = Query::select();
+    sel.expr(call);
+    let rows = session.fetch(ctx.model, &sel, &[result]).await?;
+    Ok(rows
+        .into_iter()
+        .next()
+        .and_then(|mut r| r.pop())
+        .unwrap_or(Value::Null))
 }
 
 /// The entity type addressed by a path prefix.

@@ -1,4 +1,5 @@
 use crate::change::{AcceptAll, ChangeHandler};
+use crate::operation::{OperationBuilder, OperationHandler};
 use crate::paging::{OffsetPaging, PagingProvider};
 use crate::{ODataError, ODataRequest, ODataResponse};
 use http::Method;
@@ -34,6 +35,7 @@ pub(crate) struct Inner {
     pub paging: Arc<dyn PagingProvider>,
     pub extensions: HashMap<String, Arc<dyn QueryExtension>>,
     pub changes: Arc<dyn ChangeHandler>,
+    pub operations: HashMap<String, Arc<dyn OperationHandler>>,
 }
 
 /// An OData service: a model bound to a database. Cheap to clone.
@@ -49,6 +51,7 @@ pub struct ServiceBuilder {
     paging: Arc<dyn PagingProvider>,
     extensions: HashMap<String, Arc<dyn QueryExtension>>,
     changes: Arc<dyn ChangeHandler>,
+    operations: HashMap<String, Arc<dyn OperationHandler>>,
 }
 
 impl Service {
@@ -59,6 +62,7 @@ impl Service {
             paging: Arc::new(OffsetPaging::default()),
             extensions: HashMap::new(),
             changes: Arc::new(AcceptAll),
+            operations: HashMap::new(),
         }
     }
 
@@ -78,6 +82,18 @@ impl Service {
         response
     }
 
+    pub(crate) fn parse_uri(
+        &self,
+        req: &ODataRequest,
+    ) -> Result<odatabase_uri::ODataUri, ODataError> {
+        Ok(odatabase_uri::parse_with(
+            &self.inner.model,
+            &req.path,
+            &req.query,
+            self.inner.config.uri_limits,
+        )?)
+    }
+
     async fn dispatch(&self, req: &ODataRequest) -> Result<ODataResponse, ODataError> {
         if let Some(v) = req
             .headers
@@ -91,12 +107,10 @@ impl Service {
         {
             return Err(ODataError::bad_request("the service implements OData 4.0"));
         }
-        let uri = odatabase_uri::parse_with(
-            &self.inner.model,
-            &req.path,
-            &req.query,
-            self.inner.config.uri_limits,
-        )?;
+        let uri = self.parse_uri(req)?;
+        if *uri.target() == odatabase_uri::Target::Batch && req.method == Method::POST {
+            return self.batch(req).await;
+        }
         match req.method {
             Method::GET => self.get(req, &uri).await,
             Method::POST | Method::PATCH | Method::PUT | Method::DELETE => {
@@ -138,6 +152,32 @@ impl ServiceBuilder {
         self
     }
 
+    /// Declares a function: side-effect free, called with `GET`.
+    pub fn function(
+        mut self,
+        name: &str,
+        define: impl FnOnce(OperationBuilder<'_>) -> OperationBuilder<'_>,
+    ) -> Self {
+        let (op, handler) = define(OperationBuilder::new(&mut self.model, name)).finish();
+        self.operations
+            .extend(handler.map(|h| (op.name.clone(), h)));
+        self.model.add_function(op);
+        self
+    }
+
+    /// Declares an action: may change data, called with `POST` inside a transaction.
+    pub fn action(
+        mut self,
+        name: &str,
+        define: impl FnOnce(OperationBuilder<'_>) -> OperationBuilder<'_>,
+    ) -> Self {
+        let (op, handler) = define(OperationBuilder::new(&mut self.model, name)).finish();
+        self.operations
+            .extend(handler.map(|h| (op.name.clone(), h)));
+        self.model.add_action(op);
+        self
+    }
+
     /// Validates the model and binds it to `database`.
     pub fn build(self, database: impl Into<Database>) -> Result<Service, ModelError> {
         let model = self.model.build()?;
@@ -149,6 +189,7 @@ impl ServiceBuilder {
                 paging: self.paging,
                 extensions: self.extensions,
                 changes: self.changes,
+                operations: self.operations,
             }),
         })
     }

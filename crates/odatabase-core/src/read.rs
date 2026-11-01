@@ -47,13 +47,18 @@ pub(crate) fn language(req: &ODataRequest, default: &str) -> String {
 
 /// The longest path prefix that addresses entities, and the properties after it.
 pub(crate) fn split_entity_path(path: &[Segment]) -> (&[Segment], &[Segment]) {
-    let last = path.iter().rposition(|s| {
-        matches!(s.target(), Target::Entity(_) | Target::EntityCollection(_))
-            && !matches!(s, Segment::Function { .. })
-    });
+    let last = path
+        .iter()
+        .rposition(|s| matches!(s.target(), Target::Entity(_) | Target::EntityCollection(_)));
     match last {
         Some(i) => path.split_at(i + 1),
-        None => (&[], path),
+        None => match path
+            .iter()
+            .position(|s| matches!(s, Segment::Function { .. }))
+        {
+            Some(i) if i + 1 < path.len() => path.split_at(i + 1),
+            _ => (&[], path),
+        },
     }
 }
 
@@ -89,6 +94,11 @@ impl Service {
         uri: &ODataUri,
         session: &Session,
     ) -> Result<ODataResponse, ODataError> {
+        if let Some(Segment::Function { .. }) = uri.path.last()
+            && !self.composable_result(uri)
+        {
+            return self.call_function(req, uri, session).await;
+        }
         match uri.target() {
             Target::Metadata => self.metadata(req, uri),
             Target::Root => self.service_document(req, uri),
