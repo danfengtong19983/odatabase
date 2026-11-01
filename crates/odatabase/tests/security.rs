@@ -489,6 +489,46 @@ async fn upsert_and_deep_update_respect_protection(app: App) {
     );
 }
 
+async fn post_cannot_probe_hidden_keys(app: App) {
+    let json = ("content-type", "application/json");
+    let user = as_user(&app, acme());
+    let post = |id: i32, tenant: &str| {
+        let body = json!({"Id": id, "Tenant": tenant, "Level": 1, "Region": "eu-x"}).to_string();
+        let user = user.clone();
+        async move { user.request(Method::POST, "Secrets", &[json], &body).await }
+    };
+    let free = post(70, "globex").await;
+    let taken = post(3, "globex").await;
+    assert_eq!(free.status, StatusCode::FORBIDDEN, "{}", free.text());
+    assert_eq!(
+        taken.status, free.status,
+        "out of scope: a taken key looks like a free one"
+    );
+    assert_eq!(taken.text(), free.text());
+    let visible = post(1, "acme").await;
+    assert_eq!(
+        visible.status,
+        StatusCode::CONFLICT,
+        "a row the caller can see is a real conflict"
+    );
+    let hidden = post(3, "acme").await;
+    assert_eq!(
+        hidden.status,
+        StatusCode::FORBIDDEN,
+        "no 409 for a row the caller cannot see"
+    );
+    let nested = json!({"Id": "x1", "Secrets": [{"Id": 3, "Tenant": "globex", "Level": 1}]});
+    let r = user
+        .request(Method::POST, "Holders", &[json], &nested.to_string())
+        .await;
+    assert_ne!(
+        r.status,
+        StatusCode::CONFLICT,
+        "nor in a deep insert: {}",
+        r.text()
+    );
+}
+
 async fn query_extensions(app: App) {
     let active = "ActivePartners?$apply=aggregate($count as N)";
     assert_eq!(
@@ -540,6 +580,7 @@ mod run {
         group_visibility,
         aggregates_respect_protection,
         upsert_and_deep_update_respect_protection,
+        post_cannot_probe_hidden_keys,
         query_extensions,
         batches_keep_the_caller,
     );

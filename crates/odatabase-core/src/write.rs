@@ -423,7 +423,7 @@ impl Service {
         let rec = self
             .read_one(req, session, &segs, &payload.type_name, &options)
             .await?
-            .ok_or_else(|| ODataError::new(403, "the created entity is not accessible"))?;
+            .ok_or_else(not_accessible)?;
         let id = entity_id(model, &payload.type_name, &rec).unwrap_or_default();
         let location = HeaderValue::try_from(format!("{}/{id}", req.root))
             .map_err(|_| ODataError::new(500, "invalid entity URL"))?;
@@ -459,6 +459,17 @@ impl Service {
             let l = layout(model, type_name)?;
             let mut writes = TableWrites::default();
             writes.columns(&l.root);
+            let restricted = row_restricted(model, type_name);
+            if restricted && let Some(key) = child_key(model, payload, &parent_columns) {
+                let segs = [key_segment(type_name, &key)];
+                let columns = key_columns(model, type_name)?;
+                let visible = self
+                    .column_values(req, session, &segs, type_name, &columns)
+                    .await?;
+                if visible.is_some() {
+                    return Err(ODataError::new(409, "the entity already exists"));
+                }
+            }
             let filled = filled_columns(model, payload, &parent_columns);
             let filled: Vec<&str> = filled.iter().map(String::as_str).collect();
             for owner in l.own.iter().rev() {
@@ -553,7 +564,16 @@ impl Service {
             for (table, cols) in &writes.tables {
                 if *table == l.root {
                     let cols = unique(cols);
-                    returned = Some(sql_insert(model, session, table, &cols, &key_cols).await?);
+                    let inserted = sql_insert(model, session, table, &cols, &key_cols)
+                        .await
+                        .map_err(ODataError::from)
+                        .map_err(|e| match e.status {
+                            // The caller sees no such row, so a collision is with a hidden one.
+                            // It answers like any row outside the caller's scope.
+                            409 if restricted => not_accessible(),
+                            _ => e,
+                        })?;
+                    returned = Some(inserted);
                 }
             }
             let returned = returned.ok_or_else(|| ODataError::new(500, "no root table"))?;
@@ -2102,6 +2122,10 @@ fn has_protection(model: &Model, p: &Property) -> bool {
             .is_some_and(|c| c.properties.iter().any(|q| has_protection(model, q))),
         _ => false,
     }
+}
+
+fn not_accessible() -> ODataError {
+    ODataError::new(403, "the created entity is not accessible")
 }
 
 /// Whether rows of a type can be hidden from the caller. Such types never upsert: a hidden row

@@ -383,6 +383,20 @@ pub fn docker_available() -> bool {
     })
 }
 
+/// Whether to run Postgres tests. Skipping is fine on a laptop without Docker, but in CI it
+/// would turn a green build into a claim that was never tested, so it fails instead.
+pub fn postgres_can_run() -> bool {
+    let available = docker_available();
+    assert!(
+        available || std::env::var_os("CI").is_none(),
+        "CI needs a Docker daemon: the Postgres tests must not be skipped"
+    );
+    if !available {
+        eprintln!("Docker is unavailable: Postgres scenarios were NOT run");
+    }
+    available
+}
+
 /// Declares scenarios that run on SQLite as individual tests, and together on Postgres.
 #[macro_export]
 macro_rules! scenarios {
@@ -398,8 +412,7 @@ macro_rules! scenarios {
 
         #[tokio::test]
         async fn on_postgres() {
-            if !common::docker_available() {
-                eprintln!("Docker is unavailable: Postgres scenarios were NOT run");
+            if !common::postgres_can_run() {
                 return;
             }
             let server = common::PostgresServer::start().await;
