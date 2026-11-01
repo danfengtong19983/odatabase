@@ -139,6 +139,8 @@ pub struct ExpandItem {
     pub levels: Option<Levels>,
     pub count_only: bool,
     pub ref_only: bool,
+    /// Came from `$expand=*`, which skips what the caller may not see.
+    pub from_star: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

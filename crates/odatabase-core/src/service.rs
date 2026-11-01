@@ -178,9 +178,27 @@ impl ServiceBuilder {
         self
     }
 
+    /// Restricts every read of `T`, which must be declared `#[odata(query_extension)]`.
+    pub fn query_extension<T: EdmEntity>(
+        mut self,
+        extension: impl QueryExtension + 'static,
+    ) -> Self {
+        self.extensions
+            .insert(T::edm_name().to_owned(), Arc::new(extension));
+        self
+    }
+
     /// Validates the model and binds it to `database`.
     pub fn build(self, database: impl Into<Database>) -> Result<Service, ModelError> {
         let model = self.model.build()?;
+        for t in model.entity_types.values() {
+            if t.query_extension && !self.extensions.contains_key(&t.name) {
+                return Err(ModelError(format!(
+                    "{}: no query extension registered",
+                    t.name
+                )));
+            }
+        }
         Ok(Service {
             inner: Arc::new(Inner {
                 model,

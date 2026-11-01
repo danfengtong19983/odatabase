@@ -187,6 +187,7 @@ fn expand(ctx: &OptionContext, scope: &Scope, value: &str) -> Result<Vec<ExpandI
             for n in ctx.model.all_navigation(owner) {
                 let levels = raw.strip_prefix("*(").and_then(|r| r.strip_suffix(')'));
                 let mut item = expand_item(ctx, n, Vec::new(), "", raw == "*/$ref", false)?;
+                item.from_star = true;
                 if let Some(text) = levels {
                     apply_expand_options(ctx, &mut item, text)?;
                 }
@@ -264,6 +265,7 @@ fn expand_item(
         levels: None,
         count_only,
         ref_only,
+        from_star: false,
     };
     apply_expand_options(ctx, &mut item, nested)?;
     Ok(item)

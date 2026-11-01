@@ -91,3 +91,16 @@ INSERT INTO partner_project (partner_id, project_id) VALUES ('1', 10), ('1', 20)
 INSERT INTO division (code, parent_code, population) VALUES
   ('EU', NULL, 450), ('DE', 'EU', 83), ('BE', 'DE', 3), ('BY', 'DE', 13), ('FR', 'EU', 68);
 INSERT INTO settings (id, theme) VALUES (1, 'dark');
+CREATE TABLE secret (
+  id INTEGER PRIMARY KEY,
+  partner_id TEXT REFERENCES business_partner (id),
+  tenant TEXT NOT NULL,
+  level INTEGER NOT NULL,
+  region TEXT,
+  body TEXT,
+  salary INTEGER
+);
+INSERT INTO secret (id, partner_id, tenant, level, region, body, salary) VALUES
+  (1, '1', 'acme', 1, 'eu-west', 'a', 100),
+  (2, '1', 'acme', 5, 'us-east', 'b', 200),
+  (3, '2', 'globex', 2, 'eu-north', 'c', 300);

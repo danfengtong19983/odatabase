@@ -13,6 +13,7 @@ mod read;
 mod request;
 mod service;
 mod url;
+mod visibility;
 mod write;
 
 pub use change::{AcceptAll, ChangeContext, ChangeHandler, EntityKey};

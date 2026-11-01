@@ -327,6 +327,7 @@ impl Service {
     ) -> Result<ODataResponse, ODataError> {
         let format = Format::negotiate(uri.options.format.as_deref(), &req.headers)?;
         let mut payload = parse_entity(&self.inner.model, declared, &req.body)?;
+        check_writable(&self.inner.model, &req.claims, &payload)?;
         self.inner
             .changes
             .before_create(&self.change_context(req, session), &mut payload)
@@ -934,6 +935,7 @@ impl Service {
         let put = req.method == Method::PUT;
         let (key, version) = self.locate(req, session, &uri.path, type_name).await?;
         let mut payload = parse_entity(model, type_name, &req.body)?;
+        check_writable(model, &req.claims, &payload)?;
         self.inner
             .changes
             .before_update(&self.change_context(req, session), &key, &mut payload)
@@ -1090,6 +1092,7 @@ impl Service {
     ) -> Result<ODataResponse, ODataError> {
         let model = &self.inner.model;
         let (entity_path, t, names) = self.property_target(uri)?;
+        self.check_path_visible(req, &t, &names)?;
         let (key, version) = self.locate(req, session, entity_path, &t).await?;
         let raw = matches!(uri.path.last(), Some(Segment::Value));
         let p = self.walk_property(&t, &names)?;
@@ -1191,6 +1194,7 @@ impl Service {
     ) -> Result<ODataResponse, ODataError> {
         let model = &self.inner.model;
         let (entity_path, t, names) = self.property_target(uri)?;
+        self.check_path_visible(req, &t, &names)?;
         let (key, version) = self.locate(req, session, entity_path, &t).await?;
         let (prefix, leaf) = self.walk_property(&t, &names)?;
         if leaf.collection.is_some() {
@@ -1442,6 +1446,34 @@ impl Service {
     }
 }
 
+/// Rejects writes to properties and types hidden from the caller.
+fn check_writable(
+    model: &Model,
+    claims: &odatabase_sql::Claims,
+    payload: &EntityPayload,
+) -> Result<(), ODataError> {
+    for (name, _) in &payload.values {
+        let hidden = model.property(&payload.type_name, name);
+        if hidden.is_some_and(|p| !claims.sees(&p.visible_for)) {
+            return Err(ODataError::new(403, format!("{name} is not accessible")));
+        }
+    }
+    for t in model.type_chain(&payload.type_name) {
+        if !claims.sees(&t.visible_for) {
+            return Err(ODataError::new(
+                403,
+                format!("{} is not accessible", t.name),
+            ));
+        }
+    }
+    for (_, children) in &payload.nested {
+        for child in children {
+            check_writable(model, claims, child)?;
+        }
+    }
+    Ok(())
+}
+
 /// Columns that a parent, a link or a nested entity will supply.
 fn filled_columns(
     model: &Model,
@@ -1482,6 +1514,7 @@ fn expand_of(model: &Model, payload: &EntityPayload) -> QueryOptions {
             levels: None,
             count_only: false,
             ref_only: false,
+            from_star: false,
         });
     }
     options

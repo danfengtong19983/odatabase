@@ -137,16 +137,36 @@ pub fn expand_records<'r>(
         }
         let parents: &[Record] = records;
         let type_name = parents[0].type_name.clone();
+        let items: Vec<&ExpandItem> = items
+            .iter()
+            .filter(|i| star_item_visible(ctx, &type_name, i))
+            .collect();
         let loads = items.iter().map(|item| {
             let owner = owner_type(ctx, parents, &type_name, item);
             load_item(ctx, session, parents, owner, item, limits, depth)
         });
         let results = try_join_all(loads).await?;
-        for (item, loaded) in items.iter().zip(results) {
+        for (item, loaded) in items.into_iter().zip(results) {
             attach(ctx, records, item, loaded);
         }
         Ok(())
     })
+}
+
+/// `$expand=*` leaves out navigations the caller may not see, instead of failing.
+fn star_item_visible(ctx: &QueryContext<'_>, type_name: &str, item: &ExpandItem) -> bool {
+    if !item.from_star {
+        return true;
+    }
+    let nav_visible = ctx
+        .model
+        .navigation(type_name, &item.navigation)
+        .is_none_or(|n| ctx.claims.sees(&n.visible_for));
+    let target_visible = ctx
+        .model
+        .entity_type(&item.target)
+        .is_none_or(|t| ctx.claims.sees(&t.visible_for));
+    nav_visible && target_visible
 }
 
 /// The type declaring the navigation. In a polymorphic read it may be a derived type.

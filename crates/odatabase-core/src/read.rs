@@ -6,7 +6,7 @@ use crate::paging::PageRequest;
 use crate::url::{entity_id, next_query, select_list, set_of};
 use crate::{ODataError, ODataRequest, ODataResponse, Service};
 use http::{HeaderValue, StatusCode, header};
-use odatabase_edm::{to_csdl_json, to_csdl_xml};
+use odatabase_edm::{TypeKind, to_csdl_json, to_csdl_xml};
 use odatabase_sql::{
     Node, Page, QueryContext, ReadRequest, Record, Session, count_collection, read_collection,
     read_entities,
@@ -94,6 +94,7 @@ impl Service {
         uri: &ODataUri,
         session: &Session,
     ) -> Result<ODataResponse, ODataError> {
+        self.check_selected_visibility(req, uri)?;
         if let Some(Segment::Function { .. }) = uri.path.last()
             && !self.composable_result(uri)
         {
@@ -118,8 +119,63 @@ impl Service {
         }
     }
 
-    fn metadata(&self, req: &ODataRequest, uri: &ODataUri) -> Result<ODataResponse, ODataError> {
+    /// Every property along a path must be visible to the caller.
+    pub(crate) fn check_path_visible(
+        &self,
+        req: &ODataRequest,
+        type_name: &str,
+        names: &[&str],
+    ) -> Result<(), ODataError> {
         let model = &self.inner.model;
+        let hidden = |name: &str| ODataError::new(403, format!("{name} is not accessible"));
+        let Some(first) = names.first() else {
+            return Ok(());
+        };
+        let mut current = model.property(type_name, first);
+        for (i, name) in names.iter().enumerate() {
+            let Some(p) = current else {
+                return Ok(());
+            };
+            if !req.claims.sees(&p.visible_for) {
+                return Err(hidden(name));
+            }
+            current = match (&p.kind, names.get(i + 1)) {
+                (TypeKind::Complex(t), Some(next)) => model
+                    .complex_type(t)
+                    .and_then(|c| c.properties.iter().find(|q| q.name == **next)),
+                _ => None,
+            };
+        }
+        Ok(())
+    }
+
+    /// A property named in `$select` must be visible, even though `*` silently skips it.
+    fn check_selected_visibility(
+        &self,
+        req: &ODataRequest,
+        uri: &ODataUri,
+    ) -> Result<(), ODataError> {
+        let (Some(items), Some(t)) = (&uri.options.select, target_type(uri.target())) else {
+            return Ok(());
+        };
+        for item in items {
+            let SelectItem::Path(path) = item else {
+                continue;
+            };
+            let hidden = path.first().and_then(|n| self.inner.model.property(t, n));
+            if hidden.is_some_and(|p| !req.claims.sees(&p.visible_for)) {
+                return Err(ODataError::new(
+                    403,
+                    format!("{} is not accessible", path[0]),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn metadata(&self, req: &ODataRequest, uri: &ODataUri) -> Result<ODataResponse, ODataError> {
+        let filtered = crate::visibility::visible_model(&self.inner.model, &req.claims);
+        let model = filtered.as_ref().unwrap_or(&self.inner.model);
         if metadata_as_json(uri.options.format.as_deref(), &req.headers)? {
             let body = to_csdl_json(model);
             return Ok(ODataResponse::json(
@@ -141,7 +197,8 @@ impl Service {
         uri: &ODataUri,
     ) -> Result<ODataResponse, ODataError> {
         let format = Format::negotiate(uri.options.format.as_deref(), &req.headers)?;
-        let m = &self.inner.model;
+        let filtered = crate::visibility::visible_model(&self.inner.model, &req.claims);
+        let m = filtered.as_ref().unwrap_or(&self.inner.model);
         let mut value = Vec::new();
         for s in m
             .entity_sets
@@ -401,6 +458,9 @@ impl Service {
         let body_path = &uri.path[..uri.path.len() - 1];
         let (entity_path, tail) = split_entity_path(body_path);
         let n = if let [Segment::Property { name, .. }] = tail {
+            if let Some(Target::Entity(t)) = entity_path.last().map(Segment::target) {
+                self.check_path_visible(req, t, &[name.as_str()])?;
+            }
             let Some((rec, t)) = self.owner(req, session, entity_path, name).await? else {
                 return Err(ODataError::not_found("the entity does not exist"));
             };
@@ -463,6 +523,9 @@ impl Service {
         let Some(first) = names.first() else {
             return Err(ODataError::not_implemented("this property path"));
         };
+        if let Some(Target::Entity(t)) = entity_path.last().map(Segment::target) {
+            self.check_path_visible(req, t, &names)?;
+        }
         let Some((rec, t)) = self.owner(req, session, entity_path, first).await? else {
             return Ok(None);
         };
@@ -632,6 +695,13 @@ impl Service {
             }
             _ => Err(ODataError::bad_request("$ref needs entities")),
         }
+    }
+}
+
+fn target_type(target: &Target) -> Option<&String> {
+    match target {
+        Target::Entity(t) | Target::EntityCollection(t) => Some(t),
+        _ => None,
     }
 }
 
