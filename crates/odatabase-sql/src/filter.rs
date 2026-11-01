@@ -463,7 +463,14 @@ impl<'a> Translator<'a> {
                 body,
             } => {
                 let root = self.root_frame(it, &source.root)?;
-                self.lambda(&root, &source.steps, *kind, var.as_deref(), body.as_deref())
+                self.lambda(
+                    it,
+                    &root,
+                    &source.steps,
+                    *kind,
+                    var.as_deref(),
+                    body.as_deref(),
+                )
             }
             UExpr::Cast(value, ty) => self.cast(it, value, ty),
             UExpr::IsOf(value, ty) => self.isof(it, value.as_deref(), ty),
@@ -662,8 +669,10 @@ impl<'a> Translator<'a> {
         Ok(sub(q))
     }
 
+    /// `it` stays the enclosing resource: only the lambda variable reaches the inner rows.
     fn lambda(
         &mut self,
+        it: &Frame,
         frame: &Frame,
         steps: &[Step],
         kind: LambdaKind,
@@ -696,7 +705,7 @@ impl<'a> Translator<'a> {
                         kind: kind_of,
                         joined: Vec::new(),
                     };
-                    return self.finish_lambda(q, &inner, kind, var, body);
+                    return self.finish_lambda(it, q, &inner, kind, var, body);
                 }
                 let TypeKind::Complex(t) = &p.kind else {
                     return Err(QueryError::bad_request(format!(
@@ -714,7 +723,7 @@ impl<'a> Translator<'a> {
                     },
                     ..frame.clone()
                 };
-                self.lambda(&inner, rest, kind, var, body)
+                self.lambda(it, &inner, rest, kind, var, body)
             }
             Step::Navigation(name) => {
                 let nav = self.navigation(frame, name)?;
@@ -723,9 +732,9 @@ impl<'a> Translator<'a> {
                 let target = self.enter(&mut q, &nav.target)?;
                 self.correlate(&mut q, frame, nav, &target, true)?;
                 if rest.is_empty() {
-                    return self.finish_lambda(q, &target, kind, var, body);
+                    return self.finish_lambda(it, q, &target, kind, var, body);
                 }
-                let inner = self.lambda(&target, rest, kind, var, body)?;
+                let inner = self.lambda(it, &target, rest, kind, var, body)?;
                 q.and_where(inner);
                 Ok(exists(q))
             }
@@ -734,7 +743,7 @@ impl<'a> Translator<'a> {
                     kind: FrameKind::Entity(t.clone()),
                     ..frame.clone()
                 };
-                self.lambda(&inner, rest, kind, var, body)
+                self.lambda(it, &inner, rest, kind, var, body)
             }
             Step::Count => Err(QueryError::bad_request("$count cannot be followed")),
         }
@@ -742,6 +751,7 @@ impl<'a> Translator<'a> {
 
     fn finish_lambda(
         &mut self,
+        it: &Frame,
         mut q: SelectStatement,
         inner: &Frame,
         kind: LambdaKind,
@@ -751,7 +761,7 @@ impl<'a> Translator<'a> {
         let translated = match (var, body) {
             (Some(v), Some(b)) => {
                 self.vars.push((v.to_owned(), inner.clone()));
-                let e = self.expr(inner, b);
+                let e = self.expr(it, b);
                 self.vars.pop();
                 Some(e?)
             }
@@ -865,7 +875,7 @@ impl<'a> Translator<'a> {
                 && matches!(p.steps.last(), Some(Step::Navigation(_)))
             {
                 let root = self.root_frame(it, &p.root)?;
-                let related = self.lambda(&root, &p.steps, LambdaKind::Any, None, None)?;
+                let related = self.lambda(it, &root, &p.steps, LambdaKind::Any, None, None)?;
                 return Ok(if positive { related.not() } else { related });
             }
             let operand = self.expr(it, side)?;
