@@ -9,7 +9,7 @@ use http::{HeaderValue, StatusCode, header};
 use odatabase_edm::{TypeKind, to_csdl_json, to_csdl_xml};
 use odatabase_sql::{
     Node, Page, QueryContext, ReadRequest, Record, Session, count_collection, read_collection,
-    read_entities,
+    read_columns, read_entities,
 };
 use odatabase_uri::{ODataUri, QueryOptions, Segment, SelectItem, Target};
 use serde_json::{Map, Value as Json, json};
@@ -95,6 +95,9 @@ impl Service {
         session: &Session,
     ) -> Result<ODataResponse, ODataError> {
         self.check_selected_visibility(req, uri)?;
+        if let Some(t) = capability_type(uri) {
+            crate::capabilities::check_read(&self.inner.model, t, uri)?;
+        }
         if let Some(Segment::Function { .. }) = uri.path.last()
             && !self.composable_result(uri)
         {
@@ -176,19 +179,29 @@ impl Service {
     fn metadata(&self, req: &ODataRequest, uri: &ODataUri) -> Result<ODataResponse, ODataError> {
         let filtered = crate::visibility::visible_model(&self.inner.model, &req.claims);
         let model = filtered.as_ref().unwrap_or(&self.inner.model);
-        if metadata_as_json(uri.options.format.as_deref(), &req.headers)? {
+        let mut response = if metadata_as_json(uri.options.format.as_deref(), &req.headers)? {
             let body = to_csdl_json(model);
-            return Ok(ODataResponse::json(
+            ODataResponse::json(
                 StatusCode::OK,
                 HeaderValue::from_static("application/json"),
                 &body,
-            ));
+            )
+        } else {
+            ODataResponse::with_body(StatusCode::OK, "application/xml", to_csdl_xml(model))
+        };
+        let tag = format!("\"{:016x}\"", fingerprint(&response.body));
+        if let Some(v) = req
+            .headers
+            .get(header::IF_NONE_MATCH)
+            .and_then(|v| v.to_str().ok())
+            && etag_matches(v, &tag)
+        {
+            response = ODataResponse::new(StatusCode::NOT_MODIFIED);
         }
-        Ok(ODataResponse::with_body(
-            StatusCode::OK,
-            "application/xml",
-            to_csdl_xml(model),
-        ))
+        if let Ok(value) = HeaderValue::try_from(tag) {
+            response.headers.insert(header::ETAG, value);
+        }
+        Ok(response)
     }
 
     fn service_document(
@@ -266,6 +279,7 @@ impl Service {
             },
         )
         .await?;
+        crate::transient::apply(&self.inner, &mut records);
         let has_more =
             page.next.is_some() && page.top.is_some_and(|top| records.len() as u64 > top);
         if has_more && let Some(top) = page.top {
@@ -359,6 +373,8 @@ impl Service {
             },
         )
         .await?;
+        let mut records = records;
+        crate::transient::apply(&self.inner, &mut records);
         Ok(records.into_iter().next())
     }
 
@@ -604,6 +620,9 @@ impl Service {
         uri: &ODataUri,
         session: &Session,
     ) -> Result<ODataResponse, ODataError> {
+        if self.is_media_path(uri) {
+            return self.read_media(req, uri, session).await;
+        }
         let Some((node, _, _)) = self.read_property(req, uri, session).await? else {
             return Err(ODataError::not_found("the entity does not exist"));
         };
@@ -623,6 +642,44 @@ impl Service {
             )),
             _ => Err(ODataError::bad_request("$value needs a primitive value")),
         }
+    }
+
+    async fn read_media(
+        &self,
+        req: &ODataRequest,
+        uri: &ODataUri,
+        session: &Session,
+    ) -> Result<ODataResponse, ODataError> {
+        let path = &uri.path[..uri.path.len() - 1];
+        let Some(Target::Entity(t)) = path.last().map(Segment::target) else {
+            return Err(ODataError::bad_request("$value needs an entity"));
+        };
+        let media = self
+            .inner
+            .model
+            .type_chain(t)
+            .into_iter()
+            .find_map(|e| e.media.as_ref())
+            .ok_or_else(|| ODataError::bad_request(format!("{t} has no stream")))?;
+        let mut columns = vec![media.content_column.clone()];
+        columns.extend(media.content_type_column.clone());
+        let language = language(req, &self.inner.config.default_language);
+        let ctx = self.query_context(req, &language, session);
+        let row = read_columns(&ctx, session, path, t, &columns)
+            .await?
+            .ok_or_else(|| ODataError::not_found("the entity does not exist"))?;
+        let body = match row.first() {
+            Some(odatabase_edm::Value::Binary(b)) => b.clone(),
+            _ => return Ok(ODataResponse::new(StatusCode::NO_CONTENT)),
+        };
+        let stored = row.get(1).and_then(odatabase_edm::Value::as_str);
+        let mime = stored.unwrap_or(media.content_type.as_str());
+        let mut r = ODataResponse::new(StatusCode::OK);
+        let content_type = HeaderValue::try_from(mime)
+            .unwrap_or(HeaderValue::from_static("application/octet-stream"));
+        r.headers.insert(header::CONTENT_TYPE, content_type);
+        r.body = body.into();
+        Ok(r)
     }
 
     async fn references(
@@ -696,6 +753,26 @@ impl Service {
             _ => Err(ODataError::bad_request("$ref needs entities")),
         }
     }
+}
+
+/// The entity type whose `Capabilities` restrictions apply to a read.
+fn capability_type(uri: &ODataUri) -> Option<&String> {
+    match uri.target() {
+        Target::Count => uri
+            .path
+            .iter()
+            .rev()
+            .nth(1)
+            .and_then(|s| target_type(s.target())),
+        other => target_type(other),
+    }
+}
+
+/// FNV-1a. Stable across builds, unlike the standard library's hasher.
+fn fingerprint(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, b| {
+        (hash ^ u64::from(*b)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
 
 fn target_type(target: &Target) -> Option<&String> {

@@ -104,3 +104,68 @@ INSERT INTO secret (id, partner_id, tenant, level, region, body, salary) VALUES
   (1, '1', 'acme', 1, 'eu-west', 'a', 100),
   (2, '1', 'acme', 5, 'us-east', 'b', 200),
   (3, '2', 'globex', 2, 'eu-north', 'c', 300);
+CREATE TABLE vehicle (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL
+);
+CREATE TABLE car (
+  vehicle_id INTEGER PRIMARY KEY REFERENCES vehicle (id),
+  doors INTEGER
+);
+CREATE TABLE truck (
+  vehicle_id INTEGER PRIMARY KEY REFERENCES vehicle (id),
+  payload DOUBLE PRECISION
+);
+INSERT INTO vehicle (id, name) VALUES (1, 'Plain'), (2, 'Coupe'), (3, 'Hauler');
+INSERT INTO car (vehicle_id, doors) VALUES (2, 2);
+INSERT INTO truck (vehicle_id, payload) VALUES (3, 7.5);
+CREATE TABLE place (
+  id INTEGER PRIMARY KEY,
+  country TEXT,
+  first_name TEXT,
+  last_name TEXT,
+  location TEXT,
+  blurb TEXT
+);
+CREATE TABLE country_text (
+  code TEXT NOT NULL,
+  language TEXT NOT NULL,
+  text TEXT NOT NULL,
+  PRIMARY KEY (code, language)
+);
+INSERT INTO place (id, country, first_name, last_name, location, blurb) VALUES
+  (1, 'DE', 'Ada', 'Byron', '{"type":"Point","coordinates":[13.4,52.5]}', 'red mountain bike'),
+  (2, 'FR', 'Alan', 'Turing', NULL, 'blue road bike'),
+  (3, 'XX', NULL, NULL, NULL, 'green Mountain tent');
+INSERT INTO country_text (code, language, text) VALUES
+  ('DE', 'en', 'Germany'), ('DE', 'de', 'Deutschland'), ('FR', 'en', 'France');
+CREATE TABLE document (
+  id INTEGER PRIMARY KEY,
+  title TEXT,
+  version INTEGER NOT NULL DEFAULT 1,
+  content BYTEA,
+  mime TEXT
+);
+INSERT INTO document (id, title, content, mime) VALUES (1, 'empty', NULL, NULL);
+CREATE TABLE typed (
+  id INTEGER PRIMARY KEY,
+  byte_v SMALLINT,
+  sbyte_v SMALLINT,
+  short_v SMALLINT,
+  long_v BIGINT,
+  single_v REAL,
+  time_v TIME,
+  duration_v BIGINT,
+  binary_v BYTEA,
+  guid_v UUID,
+  date_v DATE,
+  stamp_v TIMESTAMPTZ,
+  amount_v NUMERIC(20, 6),
+  flag_v BOOLEAN
+);
+CREATE TABLE locked (
+  id INTEGER PRIMARY KEY,
+  name TEXT,
+  code TEXT
+);
+INSERT INTO locked (id, name, code) VALUES (1, 'a', 'x'), (2, 'b', 'y');

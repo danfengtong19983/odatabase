@@ -270,8 +270,16 @@ impl Service {
         uri: &ODataUri,
         session: &Session,
     ) -> Result<ODataResponse, ODataError> {
+        if let Some(t) = changed_type(uri) {
+            crate::capabilities::check_write(&self.inner.model, t, &req.method)?;
+        }
         match (&req.method, uri.target()) {
             (&Method::POST, Target::ActionResult) => self.call_action(req, uri, session).await,
+            (&Method::PATCH | &Method::PUT | &Method::DELETE, Target::RawValue)
+                if self.is_media_path(uri) =>
+            {
+                self.write_media(req, uri, session).await
+            }
             (&Method::POST, Target::EntityCollection(t)) => self.create(req, uri, t, session).await,
             (&Method::POST, Target::Ref { .. }) => self.add_link(req, uri, session).await,
             (&Method::PATCH | &Method::PUT, Target::Entity(t)) => {
@@ -903,7 +911,7 @@ impl Service {
             tables.push((t.clone(), Vec::new()));
         }
         for (table, mut sets) in tables {
-            let mut conds = conditions.clone();
+            let mut conds = table_conditions(&l, &table, &conditions);
             let is_etag_table = etag_table.as_deref() == Some(table.as_str());
             if is_etag_table {
                 sets.extend(stamp.clone());
@@ -1054,6 +1062,59 @@ impl Service {
             r.headers.insert(header::ETAG, tag);
         }
         Ok(with_preference(r, pref))
+    }
+
+    /// True for `$value` of an entity rather than of a property.
+    pub(crate) fn is_media_path(&self, uri: &ODataUri) -> bool {
+        matches!(
+            uri.path.iter().rev().nth(1).map(Segment::target),
+            Some(Target::Entity(_))
+        )
+    }
+
+    /// Stores or clears the stream of a media entity.
+    async fn write_media(
+        &self,
+        req: &ODataRequest,
+        uri: &ODataUri,
+        session: &Session,
+    ) -> Result<ODataResponse, ODataError> {
+        let model = &self.inner.model;
+        let path = &uri.path[..uri.path.len() - 1];
+        let Some(Target::Entity(t)) = path.last().map(Segment::target) else {
+            return Err(ODataError::bad_request("$value needs an entity"));
+        };
+        let media = model
+            .type_chain(t)
+            .into_iter()
+            .find_map(|e| e.media.as_ref())
+            .ok_or_else(|| ODataError::bad_request(format!("{t} has no stream")))?;
+        let (key, version) = self.locate(req, session, path, t).await?;
+        let l = layout(model, t)?;
+        let mut writes = TableWrites::default();
+        let binary = TypeKind::Primitive(PrimitiveKind::Binary);
+        let content = if req.method == Method::DELETE {
+            Value::Null
+        } else {
+            Value::Binary(req.body.to_vec())
+        };
+        writes.push(
+            &l.root,
+            ColumnWrite::new(media.content_column.clone(), content, Some(binary)),
+        );
+        if let Some(column) = &media.content_type_column {
+            let mime = req
+                .headers
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map_or(Value::Null, |v| Value::String(v.to_owned()));
+            let text = TypeKind::Primitive(PrimitiveKind::String);
+            writes.push(&l.root, ColumnWrite::new(column.clone(), mime, Some(text)));
+        }
+        let guarded = req.headers.contains_key(header::IF_MATCH);
+        self.apply_update(session, t, &key, version, writes, guarded)
+            .await?;
+        Ok(ODataResponse::new(StatusCode::NO_CONTENT))
     }
 
     /// Splits `.../Set(key)/A/B[/$value]` into the owner and the property names.
@@ -1443,6 +1504,32 @@ impl Service {
         self.apply_update(session, &t, &key, version, writes, false)
             .await?;
         Ok(ODataResponse::new(StatusCode::NO_CONTENT))
+    }
+}
+
+/// Key conditions for `table`: a `Joined` table holds the key under its own column names.
+fn table_conditions(l: &Layout<'_>, table: &str, key: &[ColumnValue]) -> Vec<ColumnValue> {
+    let joined = l.own.iter().find_map(|t| match &t.inheritance {
+        Some(Inheritance::Joined { join, .. }) if t.table == table => Some(join),
+        _ => None,
+    });
+    let Some(join) = joined else {
+        return key.to_vec();
+    };
+    join.iter()
+        .filter_map(|p| {
+            let (_, value) = key.iter().find(|(c, _)| *c == p.source)?;
+            Some((p.target.clone(), value.clone()))
+        })
+        .collect()
+}
+
+/// The entity type whose `Capabilities` restrictions apply to a change.
+fn changed_type(uri: &ODataUri) -> Option<&String> {
+    let (entities, _) = split_entity_path(&uri.path);
+    match entities.last().map(Segment::target) {
+        Some(Target::Entity(t) | Target::EntityCollection(t)) => Some(t),
+        _ => None,
     }
 }
 

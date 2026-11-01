@@ -141,6 +141,16 @@ impl EntitySelect<'_, '_> {
             let mut path = prefix.to_vec();
             path.push(p.name.clone());
             if let Some(t) = &p.transient {
+                // A placeholder keeps the property's place until the service calculates it.
+                self.add(
+                    Expr::cust("NULL"),
+                    Column {
+                        path,
+                        decode: ColumnDecode::Natural,
+                        only_for: only_for.map(Into::into),
+                        hidden: None,
+                    },
+                );
                 self.transient_inputs(frame, &t.requires, prefix, only_for)?;
                 continue;
             }

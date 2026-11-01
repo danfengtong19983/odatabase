@@ -1,9 +1,10 @@
 use crate::change::{AcceptAll, ChangeHandler};
 use crate::operation::{OperationBuilder, OperationHandler};
 use crate::paging::{OffsetPaging, PagingProvider};
+use crate::transient::TransientCalculator;
 use crate::{ODataError, ODataRequest, ODataResponse};
 use http::Method;
-use odatabase_edm::{EdmEntity, Model, ModelBuilder, ModelError};
+use odatabase_edm::{Annotation, EdmEntity, Model, ModelBuilder, ModelError};
 use odatabase_sql::{Database, ExpandLimits, QueryExtension};
 use odatabase_uri::Limits;
 use std::collections::HashMap;
@@ -36,6 +37,7 @@ pub(crate) struct Inner {
     pub extensions: HashMap<String, Arc<dyn QueryExtension>>,
     pub changes: Arc<dyn ChangeHandler>,
     pub operations: HashMap<String, Arc<dyn OperationHandler>>,
+    pub calculators: HashMap<(String, String), Arc<dyn TransientCalculator>>,
 }
 
 /// An OData service: a model bound to a database. Cheap to clone.
@@ -52,6 +54,7 @@ pub struct ServiceBuilder {
     extensions: HashMap<String, Arc<dyn QueryExtension>>,
     changes: Arc<dyn ChangeHandler>,
     operations: HashMap<String, Arc<dyn OperationHandler>>,
+    calculators: HashMap<(String, String), Arc<dyn TransientCalculator>>,
 }
 
 impl Service {
@@ -63,6 +66,7 @@ impl Service {
             extensions: HashMap::new(),
             changes: Arc::new(AcceptAll),
             operations: HashMap::new(),
+            calculators: HashMap::new(),
         }
     }
 
@@ -152,6 +156,27 @@ impl ServiceBuilder {
         self
     }
 
+    /// Registers the calculator of transient property `property` of `T`.
+    pub fn transient<T: EdmEntity>(
+        mut self,
+        property: &str,
+        calculator: impl TransientCalculator + 'static,
+    ) -> Self {
+        let key = (T::edm_name().to_owned(), property.to_owned());
+        self.calculators.insert(key, Arc::new(calculator));
+        self
+    }
+
+    /// Adds an annotation that derive attributes cannot express, such as a record.
+    pub fn annotate<T: EdmEntity>(mut self, annotation: Annotation) -> Self {
+        self.model.register_entity::<T>();
+        let name = T::edm_name();
+        if let Some(t) = self.model.model_mut().entity_types.get_mut(name) {
+            t.annotations.push(annotation);
+        }
+        self
+    }
+
     /// Declares a function: side-effect free, called with `GET`.
     pub fn function(
         mut self,
@@ -198,6 +223,14 @@ impl ServiceBuilder {
                     t.name
                 )));
             }
+            for p in t.properties.iter().filter(|p| p.transient.is_some()) {
+                if !self
+                    .calculators
+                    .contains_key(&(t.name.clone(), p.name.clone()))
+                {
+                    return Err(ModelError(format!("{}.{}: no calculator", t.name, p.name)));
+                }
+            }
         }
         Ok(Service {
             inner: Arc::new(Inner {
@@ -208,6 +241,7 @@ impl ServiceBuilder {
                 extensions: self.extensions,
                 changes: self.changes,
                 operations: self.operations,
+                calculators: self.calculators,
             }),
         })
     }
