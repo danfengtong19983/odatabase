@@ -219,6 +219,38 @@ async fn filter_over_navigation(app: App) {
     }
 }
 
+async fn lambda_scopes(app: App) {
+    let cases = [
+        ("Roles/any(r: r/Code lt Rating)", vec!["1", "2"]),
+        ("Roles/any(r: r/Code lt $it/Rating)", vec!["1", "2"]),
+        ("Roles/all(r: r/Code le Rating)", vec!["1", "2", "4"]),
+        (
+            "Projects/any(p: p/Title eq 'Beta' and Id eq '1')",
+            vec!["1"],
+        ),
+        (
+            "Projects/any(p: p/Partners/any(q: q/Rating eq Rating))",
+            vec!["1", "2"],
+        ),
+        ("Comments/any(c: c eq Name)", vec![]),
+        ("Roles/any(r: r/Partner/Id eq Id)", vec!["1", "2", "3"]),
+        ("Roles/any(r: Roles/any(s: s/Code gt r/Code))", vec!["1"]),
+    ];
+    for (filter, expected) in cases {
+        let uri = format!("BusinessPartners?$filter={filter}&$orderby=Id");
+        assert_eq!(app.ids(&uri).await, expected, "{filter}");
+    }
+    let doc = app
+        .ok("BusinessPartners('1')?$expand=Owned($filter=Roles/any(r: r/Code eq 1))")
+        .await;
+    assert_eq!(doc["Owned"].as_array().unwrap().len(), 1, "in $expand");
+    let uri =
+        "BusinessPartners?$apply=filter(Roles/any(r: r/Code lt Rating))/aggregate($count as N)";
+    assert_eq!(app.ok(uri).await["value"][0]["N"], 2, "in $apply");
+    let uri = "BusinessPartners?$orderby=Roles/any(r: r/Code eq 3) desc,Id&$top=1";
+    assert_eq!(app.ids(uri).await, ["1"], "in $orderby");
+}
+
 async fn select_order_page(app: App) {
     let doc = app
         .ok("BusinessPartners?$select=Name,Address/City&$top=1")
@@ -619,6 +651,7 @@ mod run {
         filter_comparisons,
         filter_functions,
         filter_over_navigation,
+        lambda_scopes,
         select_order_page,
         paths_and_properties,
         casts,

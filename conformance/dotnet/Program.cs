@@ -307,6 +307,28 @@ foreach (var query in new[] {
     catch (Exception e) { Report(url, e); }
 }
 
+// Lambdas: Microsoft's binder must accept each filter, and the server must answer it.
+foreach (var filter in new[] {
+    "Roles/any()",
+    "Roles/any(r: r/Code gt 1)",
+    "Roles/all(r: r/Label eq 'Buyer')",
+    "Roles/any(r: r/Code lt Rating)",
+    "Roles/any(r: r/Code lt $it/Rating)",
+    "Comments/any(c: contains(c,'ir'))",
+    "Phones/any(p: p/Kind eq 'home')",
+    "Projects/any(p: p/Partners/any(q: q/Rating eq Rating))",
+    "Roles/any(r: Roles/any(s: s/Code gt r/Code))",
+}) {
+    var url = "BusinessPartners?$filter=" + filter;
+    try
+    {
+        var uri = new Uri($"{root}/BusinessPartners?$filter={Uri.EscapeDataString(filter)}");
+        new Microsoft.OData.UriParser.ODataUriParser(model, new Uri(root + "/"), uri).ParseFilter();
+        await ReadFeed(uri.PathAndQuery.Substring(new Uri(root + "/").AbsolutePath.Length));
+    }
+    catch (Exception e) { Report(url, e); }
+}
+
 // Errors
 try
 {
