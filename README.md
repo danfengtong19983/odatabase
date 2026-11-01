@@ -147,8 +147,8 @@ cargo test --workspace
 ```
 
 The test suite runs every scenario over HTTP through axum on SQLite, and again on PostgreSQL 17
-in a container. Without a Docker daemon the Postgres tests print a notice and pass, so check
-for it on a new machine.
+in a container. Without a Docker daemon the Postgres tests print a notice and pass, except when
+`CI` is set, where they fail so that a green build always means they ran.
 
 [conformance](conformance/README.md) runs third-party OData clients against the service.
 

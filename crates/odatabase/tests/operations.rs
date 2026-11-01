@@ -433,8 +433,7 @@ async fn metadata_document() {
 
 #[tokio::test]
 async fn table_functions_compose_on_postgres() {
-    if !common::docker_available() {
-        eprintln!("Docker is unavailable: table functions were NOT run");
+    if !common::postgres_can_run() {
         return;
     }
     let server = common::PostgresServer::start().await;
