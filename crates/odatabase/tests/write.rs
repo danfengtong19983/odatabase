@@ -234,7 +234,11 @@ async fn patch_and_put(app: App) {
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
 
     let r = patch(&app, "BusinessPartners('nope')", json!({"Name": "x"})).await;
-    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        r.status,
+        StatusCode::BAD_REQUEST,
+        "an upsert still needs required properties"
+    );
     let r = patch(&app, "BusinessPartners('1')", json!({"Id": "2"})).await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
     let r = patch(
@@ -604,6 +608,364 @@ async fn links(app: App) {
     assert_eq!(app.ok("BusinessPartners('3')/Owner").await["Id"], "4");
 }
 
+async fn upsert(app: App) {
+    let role = "Roles(PartnerId='4',Code=60)";
+    let r = patch(&app, role, json!({"Label": "new"})).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.text());
+    assert_eq!(
+        r.header("location"),
+        Some("http://test.local/odata/Roles(PartnerId='4',Code=60)")
+    );
+    assert_eq!(r.json()["PartnerId"], "4", "the key comes from the URL");
+    assert_eq!(r.json()["Label"], "new");
+    let r = patch(&app, role, json!({"Label": "again"})).await;
+    assert_eq!(
+        r.status,
+        StatusCode::NO_CONTENT,
+        "it exists now, so this updates"
+    );
+    assert_eq!(app.ok(role).await["Label"], "again");
+
+    let body = json!({"@odata.type": "#Test.Person", "Active": true, "FirstName": "New"});
+    let r = app
+        .request(
+            Method::PUT,
+            "BusinessPartners('50')",
+            &[JSON],
+            &body.to_string(),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.text());
+    assert_eq!(
+        app.ok("BusinessPartners('50')").await["@odata.type"],
+        "#Test.Person"
+    );
+
+    let minimal = [JSON, ("prefer", "return=minimal")];
+    let r = app
+        .request(
+            Method::PATCH,
+            "Roles(PartnerId='4',Code=61)",
+            &minimal,
+            "{}",
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        r.header("odata-entityid"),
+        Some("http://test.local/odata/Roles(PartnerId='4',Code=61)")
+    );
+
+    let deep = json!({"@odata.type": "#Test.Person", "Active": true, "Roles": [{"Code": 1}]});
+    let r = patch(&app, "BusinessPartners('51')", deep).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.text());
+    assert_eq!(
+        r.json()["Roles"][0]["PartnerId"],
+        "51",
+        "with related entities"
+    );
+
+    let r = patch(&app, "Roles(PartnerId='4',Code=62)", json!({"Code": 63})).await;
+    assert_eq!(
+        r.status,
+        StatusCode::BAD_REQUEST,
+        "the body cannot name another key"
+    );
+    assert_eq!(app.status("Roles(PartnerId='4',Code=63)").await, 404);
+    let r = patch(&app, "Roles(PartnerId='nope',Code=1)", json!({})).await;
+    assert_eq!(
+        r.status,
+        StatusCode::CONFLICT,
+        "a foreign key is still enforced"
+    );
+    let r = patch(&app, "Tickets(999)", json!({"Title": "x"})).await;
+    assert_eq!(
+        r.status,
+        StatusCode::NOT_FOUND,
+        "a generated key cannot be chosen"
+    );
+    let r = patch(
+        &app,
+        "BusinessPartners('1')/Roles(PartnerId='1',Code=99)",
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        r.status,
+        StatusCode::NOT_FOUND,
+        "only a plain key can create"
+    );
+    assert_eq!(app.status("Roles(PartnerId='1',Code=99)").await, 404);
+}
+
+async fn upsert_preconditions(app: App) {
+    let missing = "Roles(PartnerId='4',Code=70)";
+    let r = app
+        .request(Method::PATCH, missing, &[JSON, ("if-match", "*")], "{}")
+        .await;
+    assert_eq!(
+        r.status,
+        StatusCode::PRECONDITION_FAILED,
+        "If-Match never inserts"
+    );
+    assert_eq!(app.status(missing).await, 404);
+    let insert_only = [JSON, ("if-none-match", "*")];
+    let r = app
+        .request(Method::PATCH, missing, &insert_only, "{}")
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.text());
+    let r = app
+        .request(Method::PATCH, missing, &insert_only, "{}")
+        .await;
+    assert_eq!(
+        r.status,
+        StatusCode::PRECONDITION_FAILED,
+        "If-None-Match never updates"
+    );
+}
+
+async fn deep_update_to_many(app: App) {
+    let r = patch(
+        &app,
+        "BusinessPartners('1')",
+        json!({
+            "Name": "Parent",
+            "Roles": [{"Code": 1, "Label": "changed"}, {"Code": 9, "Label": "added"}]
+        }),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{}", r.text());
+    assert_eq!(app.ok("BusinessPartners('1')").await["Name"], "Parent");
+    assert_eq!(
+        app.column("BusinessPartners('1')/Roles?$orderby=Code", "Code")
+            .await,
+        [1, 9]
+    );
+    assert_eq!(
+        app.ok("Roles(PartnerId='1',Code=1)").await["Label"],
+        "changed"
+    );
+    assert_eq!(
+        app.status("Roles(PartnerId='1',Code=2)").await,
+        404,
+        "it needs its parent"
+    );
+    assert_eq!(
+        app.ok("Roles(PartnerId='2',Code=1)").await["Label"],
+        "Buyer",
+        "other parents' rows stay"
+    );
+
+    let r = patch(
+        &app,
+        "BusinessPartners('1')",
+        json!({"Owned": [{"Id": "2"}]}),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{}", r.text());
+    assert_eq!(app.ids("BusinessPartners('1')/Owned").await, ["2"]);
+    assert_eq!(
+        app.status("BusinessPartners('3')").await,
+        200,
+        "unlinked, not deleted"
+    );
+    assert_eq!(app.status("BusinessPartners('3')/Owner").await, 204);
+
+    let r = patch(
+        &app,
+        "BusinessPartners('4')",
+        json!({"Owned": [{"Id": "2"}]}),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{}", r.text());
+    assert_eq!(
+        app.ok("BusinessPartners('2')/Owner").await["Id"],
+        "4",
+        "a child can move"
+    );
+
+    let r = patch(
+        &app,
+        "Projects(10)",
+        json!({"Tickets": [{"Title": "one"}, {"Title": "two"}]}),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{}", r.text());
+    let ids = app.column("Projects(10)/Tickets", "Id").await;
+    assert_eq!(ids.len(), 2, "generated keys are created");
+    let r = patch(&app, "Projects(10)", json!({"Tickets": []})).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{}", r.text());
+    assert_eq!(app.column("Projects(10)/Tickets", "Id").await.len(), 0);
+    let kept = app.ok(&format!("Tickets({})", ids[0])).await;
+    assert_eq!(
+        kept["ProjectId"],
+        json!(null),
+        "an optional integer key is cleared"
+    );
+}
+
+async fn deep_update_join_table(app: App) {
+    let r = patch(
+        &app,
+        "BusinessPartners('1')",
+        json!({
+            "Projects": [{"Id": 20, "Title": "Renamed"}, {"Id": 30}, {"Id": 41, "Title": "New"}]
+        }),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{}", r.text());
+    assert_eq!(
+        app.column("BusinessPartners('1')/Projects?$orderby=Id", "Id")
+            .await,
+        [20, 30, 41]
+    );
+    assert_eq!(app.ok("Projects(20)").await["Title"], "Renamed");
+    assert_eq!(
+        app.ok("Projects(10)").await["Title"],
+        "Alpha",
+        "only the link is removed"
+    );
+    assert_eq!(
+        app.column("Projects(20)/Partners?$orderby=Id", "Id").await,
+        ["1", "2"]
+    );
+}
+
+async fn deep_update_to_one(app: App) {
+    let r = patch(
+        &app,
+        "BusinessPartners('2')",
+        json!({"Owner": {"Id": "1", "Name": "Updated"}}),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{}", r.text());
+    assert_eq!(app.ok("BusinessPartners('1')").await["Name"], "Updated");
+    assert_eq!(
+        app.ok("BusinessPartners('1')").await["Version"],
+        4,
+        "the child's version advances"
+    );
+
+    let r = patch(
+        &app,
+        "BusinessPartners('2')",
+        json!({"Owner": {"Name": "Through the link"}}),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{}", r.text());
+    assert_eq!(
+        app.ok("BusinessPartners('1')").await["Name"],
+        "Through the link",
+        "no key: current one"
+    );
+
+    let r = patch(&app, "BusinessPartners('4')", json!({"Owner": {"Id": "2"}})).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{}", r.text());
+    assert_eq!(app.ok("BusinessPartners('4')/Owner").await["Id"], "2");
+    assert_eq!(
+        app.ok("BusinessPartners('2')").await["Name"],
+        "Second Org",
+        "PATCH leaves the rest"
+    );
+
+    let r = patch(&app, "BusinessPartners('4')", json!({"Owner": null})).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{}", r.text());
+    assert_eq!(app.status("BusinessPartners('4')/Owner").await, 204);
+    assert_eq!(
+        app.status("BusinessPartners('2')").await,
+        200,
+        "the old target stays"
+    );
+
+    let new = json!({"Owner": {"@odata.type": "#Test.Person", "Id": "60", "Active": true}});
+    let r = patch(&app, "BusinessPartners('4')", new).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{}", r.text());
+    assert_eq!(
+        app.ok("BusinessPartners('4')/Owner").await["Id"],
+        "60",
+        "an unknown key creates"
+    );
+}
+
+async fn deep_update_is_atomic(app: App) {
+    let r = patch(
+        &app,
+        "BusinessPartners('1')",
+        json!({
+            "Name": "Lost",
+            "Owned": [{"@odata.type": "#Test.Person", "Id": "62"}]
+        }),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.text());
+    let doc = app.ok("BusinessPartners('1')").await;
+    assert_eq!(doc["Name"], "First Org", "the parent rolled back");
+    assert_eq!(doc["Version"], 3);
+    assert_eq!(
+        app.ids("BusinessPartners('1')/Owned?$orderby=Id").await,
+        ["2", "3"]
+    );
+
+    let stale = json!({"Owner": {"@odata.etag": "W/\"9\"", "Id": "1", "Name": "x"}});
+    let r = patch(&app, "BusinessPartners('2')", stale).await;
+    assert_eq!(
+        r.status,
+        StatusCode::PRECONDITION_FAILED,
+        "a nested ETag is checked"
+    );
+    assert_eq!(app.ok("BusinessPartners('1')").await["Name"], "First Org");
+    let current = json!({"Owner": {"@odata.etag": "W/\"3\"", "Id": "1", "Name": "Fresh"}});
+    let r = patch(&app, "BusinessPartners('2')", current).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{}", r.text());
+
+    let r = patch(&app, "BusinessPartners('1')", json!({"Roles@delta": []})).await;
+    assert_eq!(
+        r.status,
+        StatusCode::NOT_IMPLEMENTED,
+        "not silently ignored"
+    );
+    let r = patch(&app, "BusinessPartners('1')", json!({"Roles": {"Code": 1}})).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    let r = patch(&app, "BusinessPartners('1')", json!({"Roles": null})).await;
+    assert_eq!(
+        r.status,
+        StatusCode::BAD_REQUEST,
+        "a collection cannot be null"
+    );
+    assert_eq!(
+        app.column("BusinessPartners('1')/Roles", "Code")
+            .await
+            .len(),
+        3
+    );
+}
+
+async fn deep_update_representation(app: App) {
+    let r = app
+        .request(
+            Method::PATCH,
+            "BusinessPartners('1')",
+            &[JSON, ("prefer", "return=representation")],
+            &json!({"Roles": [{"Code": 1, "Label": "shown"}]}).to_string(),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+    let doc = r.json();
+    assert_eq!(doc["Roles"].as_array().unwrap().len(), 1, "{doc}");
+    assert_eq!(doc["Roles"][0]["Label"], "shown");
+
+    let put = json!({"Active": true, "Roles": [{"Code": 1}]}).to_string();
+    let r = app
+        .request(Method::PUT, "BusinessPartners('1')", &[JSON], &put)
+        .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{}", r.text());
+    assert_eq!(
+        app.ok("Roles(PartnerId='1',Code=1)").await["Label"],
+        json!(null),
+        "PUT resets children too"
+    );
+}
+
 mod run {
     use super::common;
     use odatabase::{Database, Service};
@@ -623,6 +985,13 @@ mod run {
         create_below_parent,
         deep_insert,
         links,
+        upsert,
+        upsert_preconditions,
+        deep_update_to_many,
+        deep_update_join_table,
+        deep_update_to_one,
+        deep_update_is_atomic,
+        deep_update_representation,
     );
 }
 

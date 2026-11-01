@@ -17,10 +17,12 @@ pub enum PropertyValue {
 pub struct EntityPayload {
     pub type_name: String,
     pub values: Vec<(String, PropertyValue)>,
-    /// Deep insert: navigation name and the entities to create.
+    /// Related entities given inline. Empty for a single-valued navigation set to null.
     pub nested: Vec<(String, Vec<EntityPayload>)>,
     /// `Nav@odata.bind`: navigation name and the URLs of existing entities.
     pub binds: Vec<(String, Vec<String>)>,
+    /// `@odata.etag` of a nested entity, checked before it is updated.
+    pub etag: Option<String>,
 }
 
 impl EntityPayload {
@@ -63,6 +65,11 @@ fn read_entity(
         values: Vec::new(),
         nested: Vec::new(),
         binds: Vec::new(),
+        etag: obj
+            .get("@odata.etag")
+            .or(obj.get("@etag"))
+            .and_then(Json::as_str)
+            .map(str::to_owned),
     };
     for (name, json) in obj {
         if let Some(nav) = name
@@ -87,12 +94,16 @@ fn read_entity(
             out.binds.push((nav.to_owned(), urls));
             continue;
         }
+        if name.ends_with("@delta") {
+            return Err(ODataError::not_implemented("delta payloads"));
+        }
         if name.contains('@') {
             continue;
         }
         if let Some(n) = model.navigation(&type_name, name) {
             let items: Vec<&Map<String, Json>> = match json {
                 Json::Object(o) if !n.collection => vec![o],
+                Json::Null if !n.collection => Vec::new(),
                 Json::Array(a) if n.collection => a
                     .iter()
                     .map(|i| {

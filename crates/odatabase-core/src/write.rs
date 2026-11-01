@@ -13,8 +13,8 @@ use odatabase_edm::{
     EntityType, Inheritance, Model, NavigationProperty, PrimitiveKind, Property, TypeKind, Value,
 };
 use odatabase_sql::{
-    ColumnValue, ColumnWrite, Session, delete as sql_delete, insert as sql_insert, read_columns,
-    update as sql_update,
+    ColumnValue, ColumnWrite, Page, ReadRequest, Session, delete as sql_delete,
+    insert as sql_insert, read_columns, read_entities, update as sql_update,
 };
 use odatabase_uri::{ExpandItem, ODataUri, QueryOptions, Segment, Target};
 use serde_json::Value as Json;
@@ -403,8 +403,23 @@ impl Service {
                 .collect();
             sql_insert(model, session, &jt.table, &cols, &[]).await?;
         }
-        let options = expand_of(model, &payload);
-        let segs = [key_segment(&payload.type_name, &created)];
+        self.created_response(req, session, &payload, &created, declared, format)
+            .await
+    }
+
+    /// The response to an insert: the new entity, or only its location.
+    async fn created_response(
+        &self,
+        req: &ODataRequest,
+        session: &Session,
+        payload: &EntityPayload,
+        created: &EntityKey,
+        declared: &str,
+        format: Format,
+    ) -> Result<ODataResponse, ODataError> {
+        let model = &self.inner.model;
+        let options = expand_of(model, payload);
+        let segs = [key_segment(&payload.type_name, created)];
         let rec = self
             .read_one(req, session, &segs, &payload.type_name, &options)
             .await?
@@ -513,7 +528,9 @@ impl Service {
                     .navigation(type_name, nav_name)
                     .expect("checked by the parser");
                 if fk_on_source(model, type_name, nav) {
-                    let child = &children[0];
+                    let Some(child) = children.first() else {
+                        continue;
+                    };
                     let key = self.insert_entity(req, session, child, Vec::new()).await?;
                     let segs = [key_segment(&child.type_name, &key)];
                     let cols: Vec<String> = nav.join.iter().map(|p| p.target.clone()).collect();
@@ -931,6 +948,24 @@ impl Service {
         let model = &self.inner.model;
         let format = Format::negotiate(uri.options.format.as_deref(), &req.headers)?;
         let put = req.method == Method::PUT;
+        let columns = key_columns(model, type_name)?;
+        let found = self
+            .column_values(req, session, &uri.path, type_name, &columns)
+            .await?
+            .is_some();
+        let insert_only = req
+            .headers
+            .get(header::IF_NONE_MATCH)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.trim() == "*");
+        if found && insert_only {
+            return Err(ODataError::new(412, "the entity already exists"));
+        }
+        if !found {
+            return self
+                .upsert(req, uri, type_name, session, insert_only, format)
+                .await;
+        }
         let (key, version) = self.locate(req, session, &uri.path, type_name).await?;
         let mut payload = parse_entity(model, type_name, &req.body)?;
         check_writable(model, &req.claims, &payload)?;
@@ -938,15 +973,116 @@ impl Service {
             .changes
             .before_update(&self.change_context(req, session), &key, &mut payload)
             .await?;
+        let guarded = req.headers.contains_key(header::IF_MATCH);
+        self.update_row(
+            req, session, type_name, &key, version, &payload, put, guarded,
+        )
+        .await?;
+        let mut options = uri.options.clone();
+        for item in expand_of(model, &payload).expand {
+            if !options
+                .expand
+                .iter()
+                .any(|e| e.navigation == item.navigation)
+            {
+                options.expand.push(item);
+            }
+        }
+        self.after_update(req, &options, session, type_name, &key, format)
+            .await
+    }
+
+    /// PATCH or PUT on a key that does not exist creates the entity.
+    async fn upsert(
+        &self,
+        req: &ODataRequest,
+        uri: &ODataUri,
+        type_name: &str,
+        session: &Session,
+        insert_only: bool,
+        format: Format,
+    ) -> Result<ODataResponse, ODataError> {
+        let model = &self.inner.model;
+        if req.headers.contains_key(header::IF_MATCH) {
+            return Err(ODataError::new(412, "the entity does not exist"));
+        }
+        let Some(values) = upsert_key(uri) else {
+            return Err(ODataError::not_found("the entity does not exist"));
+        };
+        let generated = model
+            .key_of(type_name)
+            .iter()
+            .filter_map(|k| model.property(type_name, k))
+            .any(|p| p.computed);
+        if generated || row_restricted(model, type_name) {
+            return Err(ODataError::not_found("the entity does not exist"));
+        }
+        crate::capabilities::check_write(model, type_name, &Method::POST)?;
+        let mut payload = parse_entity(model, type_name, &req.body)?;
+        check_writable(model, &req.claims, &payload)?;
+        for (name, value) in values {
+            match payload.value(name) {
+                Some(PropertyValue::Value(v))
+                    if same_key_value(model, type_name, name, v, value) => {}
+                Some(_) => return Err(ODataError::bad_request("the key cannot be changed")),
+                None => payload
+                    .values
+                    .push((name.clone(), PropertyValue::Value(value.clone()))),
+            }
+        }
+        self.inner
+            .changes
+            .before_create(&self.change_context(req, session), &mut payload)
+            .await?;
+        let created = self
+            .insert_entity(req, session, &payload, Vec::new())
+            .await
+            .map_err(|e| match e.status {
+                // Another request created it first.
+                409 if insert_only => ODataError::new(412, "the entity already exists"),
+                _ => e,
+            })?;
+        self.created_response(req, session, &payload, &created, type_name, format)
+            .await
+    }
+
+    /// Applies a body to an existing row, including related entities given inline.
+    #[allow(clippy::too_many_arguments)]
+    fn update_row<'a>(
+        &'a self,
+        req: &'a ODataRequest,
+        session: &'a Session,
+        type_name: &'a str,
+        key: &'a EntityKey,
+        version: Option<Value>,
+        payload: &'a EntityPayload,
+        put: bool,
+        guarded: bool,
+    ) -> BoxFuture<'a, Result<(), ODataError>> {
+        Box::pin(
+            self.update_row_inner(req, session, type_name, key, version, payload, put, guarded),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn update_row_inner(
+        &self,
+        req: &ODataRequest,
+        session: &Session,
+        type_name: &str,
+        key: &EntityKey,
+        version: Option<Value>,
+        payload: &EntityPayload,
+        put: bool,
+        guarded: bool,
+    ) -> Result<(), ODataError> {
+        let model = &self.inner.model;
         let l = layout(model, type_name)?;
         let mut writes = TableWrites::default();
         let concrete = &payload.type_name;
-        for (name, value) in &key {
+        for (name, value) in key {
             if let Some(PropertyValue::Value(v)) = payload.value(name)
-                && v != value
-                && !model.property(type_name, name).is_some_and(|p| {
-                    matches!(p.kind, TypeKind::Primitive(k) if v.coerce(k).as_ref() == Some(value))
-                })
+                && !same_key_value(model, type_name, name, v, value)
             {
                 return Err(ODataError::bad_request("the key cannot be changed"));
             }
@@ -992,21 +1128,32 @@ impl Service {
                 }
             }
         }
-        if !payload.nested.is_empty() {
-            return Err(ODataError::not_implemented("deep update"));
+        // Foreign keys on this row have to be known before it is written.
+        let segs = [key_segment(type_name, key)];
+        for (nav_name, children) in &payload.nested {
+            let nav = model
+                .navigation(concrete, nav_name)
+                .expect("checked by the parser");
+            if fk_on_source(model, concrete, nav) {
+                let target_values = self
+                    .sync_source_link(req, session, &segs, nav, children, put)
+                    .await?;
+                for (pair, value) in nav.join.iter().zip(target_values) {
+                    let kind = column_kind(model, type_name, &pair.source);
+                    writes.push(&l.root, ColumnWrite::new(pair.source.clone(), value, kind));
+                }
+            }
         }
-        let guarded = req.headers.contains_key(header::IF_MATCH);
-        self.apply_update(session, type_name, &key, version, writes, guarded)
+        self.apply_update(session, type_name, key, version, writes, guarded)
             .await?;
         for p in model.all_properties(type_name) {
             if let (Some(_), Some(PropertyValue::Collection(items))) =
                 (&p.collection, payload.value(&p.name))
             {
-                self.write_collection(req, session, type_name, p, &key, items, true)
+                self.write_collection(req, session, type_name, p, key, items, true)
                     .await?;
             }
         }
-        let segs = [key_segment(type_name, &key)];
         for (nav_name, urls) in &payload.binds {
             let nav = model
                 .navigation(concrete, nav_name)
@@ -1018,15 +1165,363 @@ impl Service {
                 }
             }
         }
-        self.after_update(req, uri, session, type_name, &key, format)
+        for (nav_name, children) in &payload.nested {
+            let nav = model
+                .navigation(concrete, nav_name)
+                .expect("checked by the parser");
+            if !fk_on_source(model, concrete, nav) {
+                self.sync_target_links(req, session, &segs, type_name, nav, children, put)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The keys of the entities currently related through `nav`, as the caller may see them.
+    async fn related_keys(
+        &self,
+        req: &ODataRequest,
+        session: &Session,
+        parent: &[Segment],
+        nav: &NavigationProperty,
+    ) -> Result<Vec<EntityKey>, ODataError> {
+        let model = &self.inner.model;
+        let target = match nav.collection {
+            true => Target::EntityCollection(nav.target.clone()),
+            false => Target::Entity(nav.target.clone()),
+        };
+        let mut segments = parent.to_vec();
+        segments.push(Segment::Navigation {
+            name: nav.name.clone(),
+            target,
+        });
+        let options = QueryOptions {
+            select: Some(Vec::new()),
+            ..QueryOptions::default()
+        };
+        let lang = language(req, &self.inner.config.default_language);
+        let ctx = self.query_context(req, &lang, session);
+        let records = read_entities(
+            &ctx,
+            session,
+            ReadRequest {
+                segments: &segments,
+                type_name: &nav.target,
+                options: &options,
+                page: Page::default(),
+                limits: self.inner.config.expand_limits,
+            },
+        )
+        .await?;
+        records
+            .iter()
+            .map(|r| {
+                model
+                    .key_of(&nav.target)
+                    .iter()
+                    .map(|k| {
+                        let v = r
+                            .value(k)
+                            .ok_or_else(|| ODataError::new(500, "no key value"))?;
+                        Ok((k.clone(), v.clone()))
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Updates a related entity that already exists.
+    async fn update_child(
+        &self,
+        req: &ODataRequest,
+        session: &Session,
+        child: &EntityPayload,
+        key: &EntityKey,
+        put: bool,
+    ) -> Result<(), ODataError> {
+        let model = &self.inner.model;
+        let method = if put { Method::PUT } else { Method::PATCH };
+        crate::capabilities::check_write(model, &child.type_name, &method)?;
+        let segs = [key_segment(&child.type_name, key)];
+        let mut version = None;
+        if let Some(p) = model.etag_property(&child.type_name) {
+            let current = self
+                .column_values(
+                    req,
+                    session,
+                    &segs,
+                    &child.type_name,
+                    std::slice::from_ref(&p.column),
+                )
+                .await?
+                .and_then(|mut v| v.pop())
+                .unwrap_or(Value::Null);
+            if let (Some(given), TypeKind::Primitive(k)) = (&child.etag, &p.kind)
+                && !etag_matches(given, &crate::json::etag_header(&fit(&current, *k)))
+            {
+                return Err(ODataError::new(412, "the entity tag does not match"));
+            }
+            version = Some(current);
+        }
+        let mut payload = child.clone();
+        self.inner
+            .changes
+            .before_update(&self.change_context(req, session), key, &mut payload)
+            .await?;
+        let guarded = child.etag.is_some();
+        self.update_row(
+            req,
+            session,
+            &child.type_name,
+            key,
+            version,
+            &payload,
+            put,
+            guarded,
+        )
+        .await
+    }
+
+    /// Creates a related entity.
+    async fn insert_child(
+        &self,
+        req: &ODataRequest,
+        session: &Session,
+        child: &EntityPayload,
+        parent_columns: ParentColumns,
+    ) -> Result<EntityKey, ODataError> {
+        let model = &self.inner.model;
+        crate::capabilities::check_write(model, &child.type_name, &Method::POST)?;
+        let mut payload = child.clone();
+        self.inner
+            .changes
+            .before_create(&self.change_context(req, session), &mut payload)
+            .await?;
+        self.insert_entity(req, session, &payload, parent_columns)
             .await
+    }
+
+    /// Updates the entity with the key a nested payload names, or creates it.
+    async fn write_child(
+        &self,
+        req: &ODataRequest,
+        session: &Session,
+        child: &EntityPayload,
+        parent_columns: ParentColumns,
+        put: bool,
+    ) -> Result<EntityKey, ODataError> {
+        let model = &self.inner.model;
+        let Some(key) = child_key(model, child, &parent_columns) else {
+            return self.insert_child(req, session, child, parent_columns).await;
+        };
+        let columns = key_columns(model, &child.type_name)?;
+        let segs = [key_segment(&child.type_name, &key)];
+        let exists = self
+            .column_values(req, session, &segs, &child.type_name, &columns)
+            .await?
+            .is_some();
+        if !exists {
+            if row_restricted(model, &child.type_name) {
+                return Err(ODataError::not_found("a related entity does not exist"));
+            }
+            return self.insert_child(req, session, child, parent_columns).await;
+        }
+        self.update_child(req, session, child, &key, put).await?;
+        // A child named here may belong to another parent so far.
+        let moved: Vec<ColumnWrite> = parent_columns
+            .iter()
+            .filter(|(c, _)| !columns.contains(c))
+            .map(|(c, v)| {
+                ColumnWrite::new(
+                    c.clone(),
+                    v.clone(),
+                    column_kind(model, &child.type_name, c),
+                )
+            })
+            .collect();
+        if !moved.is_empty() {
+            let l = layout(model, &child.type_name)?;
+            let conditions = key_conditions(model, &child.type_name, &key)?;
+            sql_update(model, session, &l.root, &moved, None, &conditions).await?;
+        }
+        Ok(key)
+    }
+
+    /// Applies a nested to-one entity whose foreign key is on the parent row, returning the
+    /// values to store there. The previous target is left alone: it is only unlinked.
+    async fn sync_source_link(
+        &self,
+        req: &ODataRequest,
+        session: &Session,
+        parent: &[Segment],
+        nav: &NavigationProperty,
+        children: &[EntityPayload],
+        put: bool,
+    ) -> Result<Vec<Value>, ODataError> {
+        let model = &self.inner.model;
+        let Some(child) = children.first() else {
+            return Ok(vec![Value::Null; nav.join.len()]);
+        };
+        let key = match child_key(model, child, &ParentColumns::new()) {
+            Some(_) => {
+                self.write_child(req, session, child, Vec::new(), put)
+                    .await?
+            }
+            None => match self.related_keys(req, session, parent, nav).await?.pop() {
+                Some(current) => {
+                    self.update_child(req, session, child, &current, put)
+                        .await?;
+                    current
+                }
+                None => self.insert_child(req, session, child, Vec::new()).await?,
+            },
+        };
+        let columns: Vec<String> = nav.join.iter().map(|p| p.target.clone()).collect();
+        let segs = [key_segment(&child.type_name, &key)];
+        self.column_values(req, session, &segs, &child.type_name, &columns)
+            .await?
+            .ok_or_else(|| ODataError::new(500, "the related entity is missing"))
+    }
+
+    /// Makes the related entities of a navigation match the body. Those left out are unlinked,
+    /// or deleted when they cannot exist without the parent.
+    #[allow(clippy::too_many_arguments)]
+    async fn sync_target_links(
+        &self,
+        req: &ODataRequest,
+        session: &Session,
+        parent: &[Segment],
+        parent_type: &str,
+        nav: &NavigationProperty,
+        children: &[EntityPayload],
+        put: bool,
+    ) -> Result<(), ODataError> {
+        let model = &self.inner.model;
+        let current = self.related_keys(req, session, parent, nav).await?;
+        let direct_columns: ParentColumns = if nav.join_table.is_some() {
+            Vec::new()
+        } else {
+            let columns: Vec<String> = nav.join.iter().map(|p| p.source.clone()).collect();
+            let values = self
+                .column_values(req, session, parent, parent_type, &columns)
+                .await?
+                .ok_or_else(|| ODataError::not_found("the entity does not exist"))?;
+            nav.join
+                .iter()
+                .map(|p| p.target.clone())
+                .zip(values)
+                .collect()
+        };
+        let mut kept = Vec::with_capacity(children.len());
+        for child in children {
+            let keyless = child_key(model, child, &direct_columns).is_none();
+            let key = match (keyless && !nav.collection, current.first()) {
+                (true, Some(existing)) => {
+                    self.update_child(req, session, child, existing, put)
+                        .await?;
+                    existing.clone()
+                }
+                _ => {
+                    self.write_child(req, session, child, direct_columns.clone(), put)
+                        .await?
+                }
+            };
+            if let Some(jt) = &nav.join_table
+                && !current.iter().any(|k| key_text(k) == key_text(&key))
+            {
+                self.insert_link(
+                    req,
+                    session,
+                    parent,
+                    parent_type,
+                    jt,
+                    &child.type_name,
+                    &key,
+                )
+                .await?;
+            }
+            kept.push(key_text(&key));
+        }
+        for key in current.iter().filter(|k| !kept.contains(&key_text(k))) {
+            self.remove_related(req, session, parent, parent_type, nav, key)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Ends one relationship of `nav`. Only a row that needs the parent is deleted.
+    async fn remove_related(
+        &self,
+        req: &ODataRequest,
+        session: &Session,
+        parent: &[Segment],
+        parent_type: &str,
+        nav: &NavigationProperty,
+        key: &EntityKey,
+    ) -> Result<(), ODataError> {
+        let model = &self.inner.model;
+        let target = nav.target.as_str();
+        let segs = [key_segment(target, key)];
+        if let Some(jt) = &nav.join_table {
+            let source: Vec<String> = jt.source.iter().map(|p| p.source.clone()).collect();
+            let values = self
+                .column_values(req, session, parent, parent_type, &source)
+                .await?
+                .ok_or_else(|| ODataError::not_found("the entity does not exist"))?;
+            let mut conditions: Vec<ColumnValue> = jt
+                .source
+                .iter()
+                .map(|p| p.target.clone())
+                .zip(values)
+                .collect();
+            let columns: Vec<String> = jt.target.iter().map(|p| p.target.clone()).collect();
+            let values = self
+                .column_values(req, session, &segs, target, &columns)
+                .await?
+                .ok_or_else(|| ODataError::not_found("the related entity does not exist"))?;
+            conditions.extend(jt.target.iter().map(|p| p.source.clone()).zip(values));
+            sql_delete(model, session, &jt.table, &conditions).await?;
+            return Ok(());
+        }
+        let key_cols = key_columns(model, target)?;
+        let needs_parent = nav.join.iter().any(|p| {
+            key_cols.contains(&p.target)
+                || model
+                    .all_properties(target)
+                    .iter()
+                    .any(|q| q.column == p.target && !q.nullable)
+        });
+        if needs_parent {
+            crate::capabilities::check_write(model, target, &Method::DELETE)?;
+            self.inner
+                .changes
+                .before_delete(&self.change_context(req, session), target, key)
+                .await?;
+            return self.delete_row(req, session, target, key).await;
+        }
+        crate::capabilities::check_write(model, target, &Method::PATCH)?;
+        let sets: Vec<ColumnWrite> = nav
+            .join
+            .iter()
+            .map(|p| {
+                ColumnWrite::new(
+                    p.target.clone(),
+                    Value::Null,
+                    column_kind(model, target, &p.target),
+                )
+            })
+            .collect();
+        let l = layout(model, target)?;
+        let conditions = key_conditions(model, target, key)?;
+        sql_update(model, session, &l.root, &sets, None, &conditions).await?;
+        Ok(())
     }
 
     /// The response of an update: empty, unless a representation was asked for.
     async fn after_update(
         &self,
         req: &ODataRequest,
-        uri: &ODataUri,
+        options: &QueryOptions,
         session: &Session,
         type_name: &str,
         key: &EntityKey,
@@ -1035,11 +1530,11 @@ impl Service {
         let pref = prefer_return(req);
         let segs = [key_segment(type_name, key)];
         let rec = self
-            .read_one(req, session, &segs, type_name, &uri.options)
+            .read_one(req, session, &segs, type_name, options)
             .await?
             .ok_or_else(|| ODataError::new(403, "the changed entity is not accessible"))?;
         let mut r = if pref == Return::Representation {
-            self.entity_response(req, &rec, type_name, &uri.options, format, StatusCode::OK)
+            self.entity_response(req, &rec, type_name, options, format, StatusCode::OK)
         } else {
             ODataResponse::new(StatusCode::NO_CONTENT)
         };
@@ -1285,16 +1780,28 @@ impl Service {
         type_name: &str,
         session: &Session,
     ) -> Result<ODataResponse, ODataError> {
-        let model = &self.inner.model;
         let (key, _) = self.locate(req, session, &uri.path, type_name).await?;
         self.inner
             .changes
             .before_delete(&self.change_context(req, session), type_name, &key)
             .await?;
-        let segs = [key_segment(type_name, &key)];
+        self.delete_row(req, session, type_name, &key).await?;
+        Ok(ODataResponse::new(StatusCode::NO_CONTENT))
+    }
+
+    /// Deletes a row with its collection rows and join table links.
+    async fn delete_row(
+        &self,
+        req: &ODataRequest,
+        session: &Session,
+        type_name: &str,
+        key: &EntityKey,
+    ) -> Result<(), ODataError> {
+        let model = &self.inner.model;
+        let segs = [key_segment(type_name, key)];
         for p in model.all_properties(type_name) {
             if p.collection.is_some() {
-                self.write_collection(req, session, type_name, p, &key, &[], true)
+                self.write_collection(req, session, type_name, p, key, &[], true)
                     .await?;
             }
         }
@@ -1315,7 +1822,7 @@ impl Service {
             }
         }
         let l = layout(model, type_name)?;
-        let conditions = key_conditions(model, type_name, &key)?;
+        let conditions = key_conditions(model, type_name, key)?;
         for owner in &l.own {
             if let Some(Inheritance::Joined { join, .. }) = &owner.inheritance {
                 let cols: Vec<String> = join.iter().map(|p| p.source.clone()).collect();
@@ -1332,7 +1839,7 @@ impl Service {
         if n == 0 {
             return Err(ODataError::not_found("the entity does not exist"));
         }
-        Ok(ODataResponse::new(StatusCode::NO_CONTENT))
+        Ok(())
     }
 
     /// The owner and navigation of a `.../Nav/$ref` path.
@@ -1469,10 +1976,11 @@ impl Service {
             sql_delete(model, session, &jt.table, &conditions).await?;
             return Ok(ODataResponse::new(StatusCode::NO_CONTENT));
         }
-        let clear = |pairs: Vec<String>, table: &str| -> TableWrites {
+        let clear = |pairs: Vec<String>, table: &str, type_name: &str| -> TableWrites {
             let mut w = TableWrites::default();
             for c in pairs {
-                w.push(table, ColumnWrite::new(c, Value::Null, None));
+                let kind = column_kind(model, type_name, &c);
+                w.push(table, ColumnWrite::new(c, Value::Null, kind));
             }
             w
         };
@@ -1480,7 +1988,7 @@ impl Service {
             let (key, version) = self.locate(req, session, source, &owner).await?;
             let l = layout(model, &owner)?;
             let cols = nav.join.iter().map(|p| p.source.clone()).collect();
-            let writes = clear(cols, &l.root);
+            let writes = clear(cols, &l.root, &owner);
             self.apply_update(session, &owner, &key, version, writes, false)
                 .await?;
             return Ok(ODataResponse::new(StatusCode::NO_CONTENT));
@@ -1490,7 +1998,7 @@ impl Service {
         let (key, version) = self.locate(req, session, &segs, &t).await?;
         let l = layout(model, &t)?;
         let cols = nav.join.iter().map(|p| p.target.clone()).collect();
-        let writes = clear(cols, &l.root);
+        let writes = clear(cols, &l.root, &t);
         self.apply_update(session, &t, &key, version, writes, false)
             .await?;
         Ok(ODataResponse::new(StatusCode::NO_CONTENT))
@@ -1523,6 +2031,88 @@ fn changed_type(uri: &ODataUri) -> Option<&String> {
     }
 }
 
+/// The key in the URL of an upsert. Only plain `Set(key)` paths can create an entity.
+fn upsert_key(uri: &ODataUri) -> Option<&Vec<(String, Value)>> {
+    let plain = uri.path.iter().all(|s| {
+        matches!(
+            s,
+            Segment::EntitySet { .. } | Segment::Cast { .. } | Segment::Key { .. }
+        )
+    });
+    match uri.path.last() {
+        Some(Segment::Key { values, .. }) if plain => Some(values),
+        _ => None,
+    }
+}
+
+fn same_key_value(model: &Model, type_name: &str, name: &str, given: &Value, key: &Value) -> bool {
+    given == key
+        || model.property(type_name, name).is_some_and(
+            |p| matches!(p.kind, TypeKind::Primitive(k) if given.coerce(k).as_ref() == Some(key)),
+        )
+}
+
+/// The key of a nested entity, from its own properties and those a parent fills in.
+fn child_key(model: &Model, child: &EntityPayload, parent: &ParentColumns) -> Option<EntityKey> {
+    let t = &child.type_name;
+    model
+        .key_of(t)
+        .iter()
+        .map(|name| {
+            let p = model.property(t, name)?;
+            let TypeKind::Primitive(kind) = p.kind else {
+                return None;
+            };
+            let from_body = match child.value(name) {
+                Some(PropertyValue::Value(v)) => Some(v.clone()),
+                _ => None,
+            };
+            let from_parent = parent
+                .iter()
+                .find(|(c, _)| *c == p.column)
+                .map(|(_, v)| v.clone());
+            Some((name.clone(), fit(&from_parent.or(from_body)?, kind)))
+        })
+        .collect()
+}
+
+fn key_text(key: &EntityKey) -> String {
+    key.iter()
+        .map(|(_, v)| v.to_text())
+        .collect::<Vec<_>>()
+        .join("\u{1}")
+}
+
+/// The declared type of a column, so that a null is bound with the right type.
+fn column_kind(model: &Model, type_name: &str, column: &str) -> Option<TypeKind> {
+    model
+        .all_properties(type_name)
+        .iter()
+        .find(|p| p.column == column)
+        .map(|p| p.kind.clone())
+}
+
+fn has_protection(model: &Model, p: &Property) -> bool {
+    if !p.protections.is_empty() {
+        return true;
+    }
+    match &p.kind {
+        TypeKind::Complex(t) => model
+            .complex_type(t)
+            .is_some_and(|c| c.properties.iter().any(|q| has_protection(model, q))),
+        _ => false,
+    }
+}
+
+/// Whether rows of a type can be hidden from the caller. Such types never upsert: a hidden row
+/// looks missing, so answering differently for it and for a free key would reveal that it exists.
+fn row_restricted(model: &Model, type_name: &str) -> bool {
+    model
+        .type_chain(type_name)
+        .iter()
+        .any(|t| t.query_extension || t.properties.iter().any(|p| has_protection(model, p)))
+}
+
 /// Rejects writes to properties and types hidden from the caller.
 fn check_writable(
     model: &Model,
@@ -1543,7 +2133,11 @@ fn check_writable(
             ));
         }
     }
-    for (_, children) in &payload.nested {
+    for (name, children) in &payload.nested {
+        let nav = model.navigation(&payload.type_name, name);
+        if nav.is_some_and(|n| !claims.sees(&n.visible_for)) {
+            return Err(ODataError::new(403, format!("{name} is not accessible")));
+        }
         for child in children {
             check_writable(model, claims, child)?;
         }

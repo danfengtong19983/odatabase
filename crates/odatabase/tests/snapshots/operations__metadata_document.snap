@@ -58,6 +58,7 @@ expression: "odatabase::edm::to_csdl_xml(service(pool.into()).model())"
 <Property Name="Id" Type="Edm.Int32" Nullable="false"/>
 <Property Name="Title" Type="Edm.String" Nullable="false"/>
 <NavigationProperty Name="Partners" Type="Collection(Test.BusinessPartner)" Partner="Projects"/>
+<NavigationProperty Name="Tickets" Type="Collection(Test.Ticket)"/>
 </EntityType>
 <EntityType Name="Role">
 <Key><PropertyRef Name="PartnerId"/><PropertyRef Name="Code"/></Key>
@@ -78,6 +79,7 @@ expression: "odatabase::edm::to_csdl_xml(service(pool.into()).model())"
 <Property Name="Note" Type="Edm.String"/>
 <Property Name="Priority" Type="Edm.Int32"/>
 <Property Name="Version" Type="Edm.Int32" Nullable="false"/>
+<Property Name="ProjectId" Type="Edm.Int32"/>
 <Property Name="Tags" Type="Collection(Edm.String)" Nullable="false"/>
 </EntityType>
 <Function Name="Abs" IsComposable="true">
@@ -131,7 +133,7 @@ expression: "odatabase::edm::to_csdl_xml(service(pool.into()).model())"
 <EntityContainer Name="Container">
 <EntitySet Name="BusinessPartners" EntityType="Test.BusinessPartner"><NavigationPropertyBinding Path="Roles" Target="Roles"/><NavigationPropertyBinding Path="Projects" Target="Projects"/><NavigationPropertyBinding Path="Owner" Target="BusinessPartners"/><NavigationPropertyBinding Path="Owned" Target="BusinessPartners"/></EntitySet>
 <EntitySet Name="Divisions" EntityType="Test.Division"><NavigationPropertyBinding Path="Parent" Target="Divisions"/><NavigationPropertyBinding Path="Children" Target="Divisions"/></EntitySet>
-<EntitySet Name="Projects" EntityType="Test.Project"><NavigationPropertyBinding Path="Partners" Target="BusinessPartners"/></EntitySet>
+<EntitySet Name="Projects" EntityType="Test.Project"><NavigationPropertyBinding Path="Partners" Target="BusinessPartners"/><NavigationPropertyBinding Path="Tickets" Target="Tickets"/></EntitySet>
 <EntitySet Name="Roles" EntityType="Test.Role"><NavigationPropertyBinding Path="Partner" Target="BusinessPartners"/></EntitySet>
 <EntitySet Name="Tickets" EntityType="Test.Ticket"></EntitySet>
 <Singleton Name="Settings" Type="Test.Setting"></Singleton>

@@ -238,6 +238,62 @@ try
 }
 catch (Exception e) { Report("POST with a library-written payload", e); }
 
+// Upsert and deep update, with bodies written by the library in OData 4.01 mode
+string WriteRole(int code, string label, IEdmEntitySet set)
+{
+    var ms = new MemoryStream();
+    var ws = new ODataMessageWriterSettings { Version = ODataVersion.V401, BaseUri = new Uri(root + "/"), ODataUri = new ODataUri { ServiceRoot = new Uri(root + "/") } };
+    using (var mw = new ODataMessageWriter((IODataRequestMessage)new RequestMessage(ms), ws, model))
+    {
+        var w = mw.CreateODataResourceWriter(set, set.EntityType);
+        w.WriteStart(new ODataResource { Properties = new[] { new ODataProperty { Name = "Label", Value = label } } });
+        w.WriteEnd();
+    }
+    return Encoding.UTF8.GetString(ms.ToArray());
+}
+
+try
+{
+    var set = model.EntityContainer.FindEntitySet("Roles");
+    var r = await Send(HttpMethod.Patch, "Roles(PartnerId='4',Code=80)", WriteRole(80, "upserted", set), "application/json");
+    r.Ensure("upsert", 201);
+    using var mr = new ODataMessageReader((IODataResponseMessage)r, Settings(), model);
+    var reader = mr.CreateODataResourceReader(set, set.EntityType);
+    while (reader.Read()) { }
+    var again = await Send(HttpMethod.Patch, "Roles(PartnerId='4',Code=80)", WriteRole(80, "updated", set), "application/json");
+    again.Ensure("second PATCH", 204);
+    Report("upsert with PATCH: 201, then 204");
+}
+catch (Exception e) { Report("upsert with PATCH", e); }
+
+try
+{
+    var set = model.EntityContainer.FindEntitySet("BusinessPartners");
+    var ms = new MemoryStream();
+    var ws = new ODataMessageWriterSettings { Version = ODataVersion.V401, BaseUri = new Uri(root + "/"), ODataUri = new ODataUri { ServiceRoot = new Uri(root + "/") } };
+    using (var mw = new ODataMessageWriter((IODataRequestMessage)new RequestMessage(ms), ws, model))
+    {
+        var w = mw.CreateODataResourceWriter(set, set.EntityType);
+        w.WriteStart(new ODataResource { Properties = new[] { new ODataProperty { Name = "Name", Value = "Deep from .NET" } } });
+        w.WriteStart(new ODataNestedResourceInfo { Name = "Roles", IsCollection = true });
+        w.WriteStart(new ODataResourceSet());
+        w.WriteStart(new ODataResource { Properties = new ODataProperty[] {
+            new() { Name = "Code", Value = 5 }, new() { Name = "Label", Value = "nested" } } });
+        w.WriteEnd();
+        w.WriteEnd();
+        w.WriteEnd();
+        w.WriteEnd();
+    }
+    var r = await Send(HttpMethod.Patch, "BusinessPartners('2')", Encoding.UTF8.GetString(ms.ToArray()), "application/json");
+    r.Ensure("deep update", 204);
+    var check = await Send(HttpMethod.Get, "BusinessPartners('2')/Roles?$select=Code");
+    var codes = System.Text.Json.JsonDocument.Parse(check.Body).RootElement.GetProperty("value")
+        .EnumerateArray().Select(x => x.GetProperty("Code").GetInt32()).ToArray();
+    if (codes.Length != 1 || codes[0] != 5) throw new Exception("roles: " + string.Join(",", codes));
+    Report("deep update with a library-written nested body");
+}
+catch (Exception e) { Report("deep update", e); }
+
 // Batch written and read by the library
 try
 {

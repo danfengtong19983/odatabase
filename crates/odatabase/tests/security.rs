@@ -377,6 +377,118 @@ async fn aggregates_respect_protection(app: App) {
     );
 }
 
+async fn upsert_and_deep_update_respect_protection(app: App) {
+    let json = ("content-type", "application/json");
+    let user = as_user(&app, acme());
+    let row = json!({"Tenant": "acme", "Level": 1, "Region": "eu-x", "Body": "x"}).to_string();
+    let r = user
+        .request(Method::PATCH, "Secrets(3)", &[json], &row)
+        .await;
+    assert_eq!(
+        r.status,
+        StatusCode::NOT_FOUND,
+        "a hidden row reads as missing: {}",
+        r.text()
+    );
+    let free = user
+        .request(Method::PATCH, "Secrets(50)", &[json], &row)
+        .await;
+    assert_eq!(
+        free.status, r.status,
+        "a free key answers the same, so nothing can be probed"
+    );
+    let r = user
+        .request(Method::PUT, "Secrets(50)", &[json], &row)
+        .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+
+    let all = Claims::default()
+        .with("tenant", ClaimValue::Equals(Value::String("acme".into())))
+        .with("tenant", ClaimValue::Equals(Value::String("globex".into())))
+        .with("level", ClaimValue::Range(Value::Int32(0), Value::Int32(9)))
+        .with("region", ClaimValue::Equals(Value::String("*".into())));
+    let admin = as_user(&app, all);
+    assert_eq!(admin.ok("Secrets(3)").await["Body"], "c", "untouched");
+    assert_eq!(
+        admin.status("Secrets(50)").await,
+        404,
+        "and nothing was stored"
+    );
+
+    let nested = json!({"Secrets": [{"Id": 3, "Body": "stolen"}]}).to_string();
+    let r = user
+        .request(Method::PATCH, "Holders('1')", &[json], &nested)
+        .await;
+    assert_eq!(
+        r.status,
+        StatusCode::NOT_FOUND,
+        "a nested hidden row too: {}",
+        r.text()
+    );
+    let free = json!({"Secrets": [{"Id": 52, "Body": "x"}]}).to_string();
+    let r = user
+        .request(Method::PATCH, "Holders('1')", &[json], &free)
+        .await;
+    assert_eq!(
+        r.status,
+        StatusCode::NOT_FOUND,
+        "and a free nested key answers the same"
+    );
+    assert_eq!(admin.ok("Secrets(3)").await["Body"], "c");
+    assert_eq!(
+        admin.ok("Secrets(1)").await["PartnerId"],
+        "1",
+        "the failed updates rolled back"
+    );
+
+    let r = user
+        .request(
+            Method::PATCH,
+            "Holders('1')",
+            &[json],
+            &json!({"Secrets": []}).to_string(),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{}", r.text());
+    assert_eq!(
+        admin.ok("Secrets(1)").await["PartnerId"],
+        json!(null),
+        "a visible child is unlinked"
+    );
+    assert_eq!(
+        admin.ok("Secrets(2)").await["PartnerId"],
+        "1",
+        "a hidden child stays linked"
+    );
+
+    let r = user
+        .request(
+            Method::PATCH,
+            "Holders('1')",
+            &[json],
+            &json!({"Audit": []}).to_string(),
+        )
+        .await;
+    assert_eq!(
+        r.status,
+        StatusCode::FORBIDDEN,
+        "a hidden navigation cannot be written"
+    );
+    let r = user
+        .request(
+            Method::PATCH,
+            "Holders('1')",
+            &[json],
+            &json!({"Secrets": [{"Id": 1, "Salary": 1}]}).to_string(),
+        )
+        .await;
+    assert_eq!(
+        r.status,
+        StatusCode::FORBIDDEN,
+        "nor a hidden property of a child"
+    );
+}
+
 async fn query_extensions(app: App) {
     let active = "ActivePartners?$apply=aggregate($count as N)";
     assert_eq!(
@@ -427,6 +539,7 @@ mod run {
         protection_on_writes,
         group_visibility,
         aggregates_respect_protection,
+        upsert_and_deep_update_respect_protection,
         query_extensions,
         batches_keep_the_caller,
     );
