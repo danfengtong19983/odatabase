@@ -45,6 +45,17 @@ pub fn set_of<'m>(model: &'m Model, type_name: &str) -> Option<&'m str> {
         .map(|s| s.name.as_str())
 }
 
+/// The set of `type_name` in a context URL, with a cast when the set holds a base type.
+pub fn set_path(model: &Model, type_name: &str) -> Option<String> {
+    let set = set_of(model, type_name)?;
+    match model.entity_sets.get(set) {
+        Some(s) if s.entity_type != type_name => {
+            Some(format!("{set}/{}", model.qualified(type_name)))
+        }
+        _ => Some(set.to_owned()),
+    }
+}
+
 /// The canonical URL of an entity, relative to the service root.
 pub fn entity_id(model: &Model, type_name: &str, rec: &Record) -> Option<String> {
     if let Some(s) = model

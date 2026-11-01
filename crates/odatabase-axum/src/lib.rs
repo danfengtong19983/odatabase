@@ -1,7 +1,7 @@
 //! Serves an odatabase [`Service`] from an axum router.
 //!
 //! ```ignore
-//! let app = axum::Router::new().nest("/odata", odatabase_axum::router(service));
+//! let app = odatabase_axum::mount("/odata", service);
 //! ```
 //!
 //! Middleware can restrict the request by inserting [`Claims`] into its extensions.
@@ -16,23 +16,41 @@ use odatabase_core::{Claims, ODataRequest, Service};
 /// Request bodies above this size are rejected.
 const MAX_BODY: usize = 16 * 1024 * 1024;
 
-/// A router answering every path below its mount point with `service`.
-pub fn router(service: Service) -> Router {
-    Router::new()
-        .route("/", axum::routing::any(handle))
-        .route("/{*path}", axum::routing::any(handle))
-        .fallback(handle)
-        .with_state(service)
+#[derive(Clone)]
+struct Mounted {
+    service: Service,
+    prefix: String,
+}
+
+/// A router serving `service` at `prefix`. Merge it into your application's router.
+///
+/// The root answers with and without a trailing slash, which `Router::nest` cannot do,
+/// and OData clients commonly add one.
+pub fn mount(prefix: &str, service: Service) -> Router {
+    let prefix = prefix.trim_end_matches('/').to_owned();
+    let handler = axum::routing::any(handle);
+    let mut router = Router::new()
+        .route(&format!("{prefix}/"), handler.clone())
+        .route(&format!("{prefix}/{{*path}}"), handler.clone());
+    if !prefix.is_empty() {
+        router = router.route(&prefix, handler);
+    }
+    router.with_state(Mounted { service, prefix })
 }
 
 async fn handle(
-    State(service): State<Service>,
+    State(Mounted { service, prefix }): State<Mounted>,
     OriginalUri(original): OriginalUri,
     request: Request,
 ) -> Response {
     let (parts, body) = request.into_parts();
-    let path = parts.uri.path().to_owned();
-    // The original URI still has the nest prefix, which is part of the service root.
+    let path = parts
+        .uri
+        .path()
+        .strip_prefix(prefix.as_str())
+        .unwrap_or("")
+        .to_owned();
+    // The original URI includes any outer `nest`, which is part of the service root.
     let below_root = path.trim_end_matches('/');
     let prefix = original.path().trim_end_matches('/');
     let prefix = prefix.strip_suffix(below_root).unwrap_or(prefix);

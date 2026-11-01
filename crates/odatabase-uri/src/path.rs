@@ -289,7 +289,7 @@ impl PathBuilder<'_> {
         {
             return self.function(None, name, a);
         }
-        if args.is_none() && self.model.actions.contains_key(name) {
+        if no_arguments(args) && self.model.actions.contains_key(name) {
             return self.action(None, name);
         }
         Err(not_found(text))
@@ -409,7 +409,7 @@ impl PathBuilder<'_> {
         {
             return self.function(Some((t.to_owned(), collection)), local, a);
         }
-        if args.is_none() && self.model.actions.contains_key(local) {
+        if no_arguments(args) && self.model.actions.contains_key(local) {
             return self.action(Some((t.to_owned(), collection)), local);
         }
         if self.model.entity_types.contains_key(local) {
@@ -560,6 +560,11 @@ fn operation_target(op: &Operation) -> Target {
             Target::PrimitiveCollection(ExprType::Enum(n.clone()))
         }
     }
+}
+
+/// Actions take no parentheses in the grammar, but the Olingo client sends `Action()`.
+fn no_arguments(args: Option<&str>) -> bool {
+    args.is_none_or(|a| a.trim().is_empty())
 }
 
 fn looks_named(text: &str) -> bool {

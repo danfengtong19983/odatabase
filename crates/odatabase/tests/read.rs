@@ -59,6 +59,11 @@ async fn singletons_and_documents(app: App) {
     );
     let doc = app.ok("").await;
     assert_eq!(doc["@odata.context"], "http://test.local/odata/$metadata");
+    let without_slash = axum::http::Request::get("/odata")
+        .header("host", "test.local")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    assert_eq!(app.send(without_slash).await.status, StatusCode::OK);
     let names: Vec<&str> = doc["value"]
         .as_array()
         .unwrap()
@@ -397,6 +402,16 @@ async fn paths_and_properties(app: App) {
 }
 
 async fn casts(app: App) {
+    let doc = app.ok("BusinessPartners/Test.Person").await;
+    assert_eq!(
+        doc["@odata.context"],
+        "http://test.local/odata/$metadata#BusinessPartners/Test.Person"
+    );
+    let doc = app.ok("BusinessPartners('3')/Test.Person").await;
+    assert_eq!(
+        doc["@odata.context"],
+        "http://test.local/odata/$metadata#BusinessPartners/Test.Person/$entity"
+    );
     assert_eq!(app.ids("BusinessPartners/Test.Person").await, ["3", "4"]);
     assert_eq!(
         app.ok("BusinessPartners('3')/Test.Person").await["FirstName"],

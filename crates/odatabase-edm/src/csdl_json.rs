@@ -1,6 +1,6 @@
 //! CSDL JSON, served for `$metadata?$format=json`.
 
-use crate::csdl_xml::referenced_vocabularies;
+use crate::csdl_xml::{in_service_document, referenced_vocabularies};
 use crate::model::*;
 use crate::value::PrimitiveKind;
 use serde_json::{Map, Value as Json, json};
@@ -199,7 +199,11 @@ fn container(m: &Model) -> Json {
         if ops.iter().any(|f| !f.is_bound) {
             o.insert(
                 name.clone(),
-                json!({"$Function": m.qualified(name), "$IncludeInServiceDocument": true}),
+                if in_service_document(ops) {
+                    json!({"$Function": m.qualified(name), "$IncludeInServiceDocument": true})
+                } else {
+                    json!({"$Function": m.qualified(name)})
+                },
             );
         }
     }

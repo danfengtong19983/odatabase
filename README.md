@@ -31,7 +31,7 @@ pub struct Order {
 }
 
 let service = Service::builder("Shop").entity::<Customer>().build(pool)?;
-let app = axum::Router::new().nest("/odata", odatabase::router(service));
+let app = odatabase::mount("/odata", service);
 ```
 
 A runnable version is in [examples/quickstart.rs](crates/odatabase/examples/quickstart.rs):
@@ -82,8 +82,8 @@ authentication.
 
 - **Set a page size.** Reads are unlimited by default, like the Java project. Public services
   should use `.paging(OffsetPaging { page_size: Some(100) })`.
-- **Mount path.** With `Router::nest("/odata", ...)` the root is `/odata`. axum answers
-  `/odata/` with a 404 before the service sees it.
+- **Mounting.** `mount` returns a `Router` to merge into your own. Use it rather than `nest`,
+  because `nest` answers `/odata/` with a 404 and .NET clients send that trailing slash.
 - **Service URLs** are built from the `Host` and `X-Forwarded-Proto` headers. Run behind a proxy
   that sets them.
 - **API versions** are separate `Service` values mounted at different paths.
@@ -133,6 +133,8 @@ cargo test --workspace
 The test suite runs every scenario over HTTP through axum on SQLite, and again on PostgreSQL 17
 in a container. Without a Docker daemon the Postgres tests print a notice and pass, so check
 for it on a new machine.
+
+[conformance](conformance/README.md) runs third-party OData clients against the service.
 
 Snapshots of generated SQL and `$metadata` are in
 [crates/odatabase/tests/snapshots](crates/odatabase/tests/snapshots). Review changes to them with

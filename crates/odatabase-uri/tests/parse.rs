@@ -456,6 +456,11 @@ fn operations() {
     };
     assert_eq!(args[0].1, Expr::Literal(Value::Int32(3)));
     assert_eq!(*ok("Reset", "").target(), Target::ActionResult);
+    assert_eq!(
+        *ok("Reset()", "").target(),
+        Target::ActionResult,
+        "as Olingo sends it"
+    );
     assert_eq!(fail("Double(y=2)", "").status, 404);
 }
 

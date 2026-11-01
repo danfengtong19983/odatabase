@@ -132,8 +132,8 @@ expression: "odatabase::edm::to_csdl_xml(service(pool.into()).model())"
 <EntitySet Name="Roles" EntityType="Test.Role"><NavigationPropertyBinding Path="Partner" Target="BusinessPartners"/></EntitySet>
 <EntitySet Name="Tickets" EntityType="Test.Ticket"></EntitySet>
 <Singleton Name="Settings" Type="Test.Setting"></Singleton>
-<FunctionImport Name="Abs" Function="Test.Abs" IncludeInServiceDocument="true"/>
-<FunctionImport Name="Add" Function="Test.Add" IncludeInServiceDocument="true"/>
+<FunctionImport Name="Abs" Function="Test.Abs"/>
+<FunctionImport Name="Add" Function="Test.Add"/>
 <FunctionImport Name="Hidden" Function="Test.Hidden" IncludeInServiceDocument="true"/>
 <FunctionImport Name="Missing" Function="Test.Missing" IncludeInServiceDocument="true"/>
 <FunctionImport Name="Numbers" Function="Test.Numbers" IncludeInServiceDocument="true"/>

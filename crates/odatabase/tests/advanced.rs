@@ -588,9 +588,7 @@ async fn api_versions_are_separate_services() {
         .entity::<Car>()
         .build(pool)
         .unwrap();
-    let router = axum::Router::new()
-        .nest("/odata/v1", odatabase::router(v1))
-        .nest("/odata/v2", odatabase::router(v2));
+    let router = odatabase::mount("/odata/v1", v1).merge(odatabase::mount("/odata/v2", v2));
     let app = App { router };
     assert!(
         app.get("v1/$metadata")

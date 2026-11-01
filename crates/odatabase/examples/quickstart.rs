@@ -62,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     sqlx::raw_sql(SCHEMA).execute(&pool).await?;
 
     let service = Service::builder("Shop").entity::<Customer>().build(pool)?;
-    let app = axum::Router::new().nest("/odata", odatabase::router(service));
+    let app = odatabase::mount("/odata", service);
     let address = std::env::var("ODATA_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".to_owned());
     let listener = tokio::net::TcpListener::bind(&address).await?;
     println!("serving http://{address}/odata");

@@ -298,9 +298,14 @@ impl Xml<'_> {
         for (name, ops) in &m.functions {
             if ops.iter().any(|o| !o.is_bound) {
                 let target = entity_set_of(m, ops);
+                let listed = if in_service_document(ops) {
+                    " IncludeInServiceDocument=\"true\""
+                } else {
+                    ""
+                };
                 let _ = writeln!(
                     self.out,
-                    "<FunctionImport Name=\"{0}\" Function=\"{1}\"{target} IncludeInServiceDocument=\"true\"/>",
+                    "<FunctionImport Name=\"{0}\" Function=\"{1}\"{target}{listed}/>",
                     esc(name),
                     esc(&m.qualified(name))
                 );
@@ -409,6 +414,13 @@ impl Xml<'_> {
             }
         }
     }
+}
+
+/// A function can only be listed when it can be called without parameters.
+pub(crate) fn in_service_document(ops: &[Operation]) -> bool {
+    ops.iter()
+        .filter(|o| !o.is_bound)
+        .all(|o| o.parameters.is_empty())
 }
 
 fn wrapped_type(m: &Model, t: &OperationType) -> String {

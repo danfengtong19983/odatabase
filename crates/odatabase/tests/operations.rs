@@ -259,6 +259,12 @@ async fn actions(app: App) {
     );
     assert_eq!(app.status("Ping").await, 405, "actions need POST");
     assert_eq!(post("Ping", json!({})).await.status, StatusCode::OK);
+    let annotated = json!({"x": 1, "x@odata.type": "Int32"});
+    assert_eq!(
+        post("Ping", annotated).await.status,
+        StatusCode::OK,
+        "as Olingo sends it"
+    );
 }
 
 async fn metadata_lists_operations(app: App) {

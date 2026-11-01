@@ -3,7 +3,7 @@
 use crate::format::{Format, metadata_as_json};
 use crate::json::{Writer, etag_header};
 use crate::paging::PageRequest;
-use crate::url::{entity_id, next_query, select_list, set_of};
+use crate::url::{entity_id, next_query, select_list, set_path};
 use crate::{ODataError, ODataRequest, ODataResponse, Service};
 use http::{HeaderValue, StatusCode, header};
 use odatabase_edm::{TypeKind, to_csdl_json, to_csdl_xml};
@@ -331,7 +331,7 @@ impl Service {
 
     fn context_collection(&self, req: &ODataRequest, t: &str, o: &QueryOptions) -> String {
         let m = &self.inner.model;
-        match set_of(m, t) {
+        match set_path(m, t) {
             Some(set) => format!("{}/$metadata#{set}{}", req.root, select_list(o)),
             None => format!("{}/$metadata#Collection({})", req.root, m.qualified(t)),
         }
@@ -342,7 +342,7 @@ impl Service {
         if let Some(s) = m.singletons.values().find(|s| s.entity_type == t) {
             return format!("{}/$metadata#{}{}", req.root, s.name, select_list(o));
         }
-        match set_of(m, t) {
+        match set_path(m, t) {
             Some(set) => format!("{}/$metadata#{set}{}/$entity", req.root, select_list(o)),
             None => format!("{}/$metadata#{}", req.root, m.qualified(t)),
         }

@@ -261,7 +261,12 @@ impl Service {
             serde_json::from_slice(&req.body)
                 .map_err(|e| ODataError::bad_request(format!("invalid JSON: {e}")))?
         };
-        if let Some(unknown) = body.keys().find(|k| !params.iter().any(|p| p.name == **k)) {
+        // Clients send annotations such as `a@odata.type` next to the parameters.
+        let unknown = body
+            .keys()
+            .filter(|k| !k.contains('@'))
+            .find(|k| !params.iter().any(|p| p.name == **k));
+        if let Some(unknown) = unknown {
             return Err(ODataError::bad_request(format!(
                 "unknown parameter {unknown}"
             )));

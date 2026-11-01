@@ -228,7 +228,7 @@ impl Response {
 impl App {
     pub fn new(service: Service) -> Self {
         Self {
-            router: Router::new().nest("/odata", odatabase::router(service)),
+            router: odatabase::mount("/odata", service),
         }
     }
 
@@ -252,11 +252,7 @@ impl App {
     ) -> Response {
         let mut req = Request::builder()
             .method(method)
-            .uri(if uri.is_empty() {
-                "/odata".to_owned()
-            } else {
-                format!("/odata/{}", encode_spaces(uri))
-            })
+            .uri(format!("/odata/{}", encode_spaces(uri)))
             .header(header::HOST, "test.local");
         for (k, v) in headers {
             req = req.header(*k, *v);
