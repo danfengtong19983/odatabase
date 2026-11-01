@@ -116,6 +116,9 @@ expression: "odatabase::edm::to_csdl_xml(service(pool.into()).model())"
 <Function Name="TopPartners">
 <ReturnType Type="Collection(Test.BusinessPartner)"/>
 </Function>
+<Action Name="Bump" IsBound="true">
+<Parameter Name="bindingParameter" Type="Test.BusinessPartner" Nullable="false"/>
+</Action>
 <Action Name="Ping">
 <Parameter Name="x" Type="Edm.Int32"/>
 <ReturnType Type="Edm.Int32" Nullable="false"/>

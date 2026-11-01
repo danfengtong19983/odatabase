@@ -87,6 +87,8 @@ authentication.
   because `nest` answers `/odata/` with a 404 and .NET clients send that trailing slash.
 - **Service URLs** are built from the `Host` and `X-Forwarded-Proto` headers. Run behind a proxy
   that sets them.
+- **Bound actions** check `If-Match` before the handler runs. A handler that changes the entity
+  must advance its version column too, through `sql::update`, or the old ETag stays valid.
 - **API versions** are separate `Service` values mounted at different paths.
 - **Errors.** Database errors reach clients as generic messages. Causes are logged with `tracing`.
 

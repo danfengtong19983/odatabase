@@ -7,12 +7,12 @@ use crate::payload::{PropertyValue, read_property};
 use crate::read::{language, split_entity_path};
 use crate::{ODataError, ODataRequest, ODataResponse, Service};
 use async_trait::async_trait;
-use http::StatusCode;
+use http::{Method, StatusCode, header};
 use odatabase_edm::{
     EdmEntity, EdmField, FieldType, Model, ModelBuilder, Operation, OperationType,
     OperationTypeKind, Parameter, Property, TypeKind, Value,
 };
-use odatabase_sql::{Claims, ColumnDecode, Session, call_scalar, literal_args};
+use odatabase_sql::{Claims, ColumnDecode, Session, call_scalar, literal_args, lock_row};
 use odatabase_uri::{Expr, ODataUri, QueryOptions, Segment, Target};
 use serde_json::{Map, Value as Json};
 use std::sync::Arc;
@@ -61,6 +61,9 @@ pub enum OperationResult {
 }
 
 /// The application code behind an operation, like a `@EdmFunction` Java method.
+///
+/// `If-Match` is checked before a handler runs on a bound entity. A handler that changes the
+/// entity must advance its version as well, or the old ETag stays valid.
 #[async_trait]
 pub trait OperationHandler: Send + Sync {
     async fn call(&self, ctx: &OperationContext<'_>) -> Result<OperationResult, ODataError>;
@@ -214,6 +217,7 @@ impl Service {
             return Err(ODataError::new(403, format!("{name} is not accessible")));
         }
         let result = if let Some(db_name) = &op.database_function {
+            self.binding(req, uri, session).await?;
             let values = literal_args(name, op, args)?;
             let ret = op
                 .return_type
@@ -282,6 +286,7 @@ impl Service {
             parameters.push((p.name.clone(), value));
         }
         let result = if let Some(db_name) = &op.database_function {
+            self.binding(req, uri, session).await?;
             let mut values = Vec::with_capacity(parameters.len());
             for (name, p) in &parameters {
                 match p {
@@ -350,7 +355,13 @@ impl Service {
             })),
             Some(Target::Entity(t)) => {
                 let (entity_path, _) = split_entity_path(path);
-                let key = self.entity_key_of(req, session, entity_path, t).await?;
+                // The lock keeps the tag current until the action's transaction ends.
+                if req.method == Method::POST && req.headers.contains_key(header::IF_MATCH) {
+                    let lang = language(req, &self.inner.config.default_language);
+                    let ctx = self.query_context(req, &lang, session);
+                    lock_row(&ctx, session, entity_path, t).await?;
+                }
+                let (key, _) = self.locate(req, session, entity_path, t).await?;
                 Ok(Some(Binding::Entity {
                     type_name: t.clone(),
                     key,
