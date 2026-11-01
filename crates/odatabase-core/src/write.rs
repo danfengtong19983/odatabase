@@ -446,9 +446,6 @@ impl Service {
             writes.columns(&l.root);
             let filled = filled_columns(model, payload, &parent_columns);
             let filled: Vec<&str> = filled.iter().map(String::as_str).collect();
-            for (column, value) in parent_columns {
-                writes.push(&l.root, ColumnWrite::new(column, value, None));
-            }
             for owner in l.own.iter().rev() {
                 let table = table_of(&l, owner).to_owned();
                 match &owner.inheritance {
@@ -530,6 +527,10 @@ impl Service {
                 }
             }
 
+            // Last, so that the body cannot move the row to a different parent.
+            for (column, value) in parent_columns {
+                writes.push(&l.root, ColumnWrite::new(column, value, None));
+            }
             let key_cols = key_columns(model, type_name)?;
             let mut returned = None;
             for (table, cols) in &writes.tables {

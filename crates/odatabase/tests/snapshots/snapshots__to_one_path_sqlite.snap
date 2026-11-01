@@ -1,0 +1,5 @@
+---
+source: crates/odatabase/tests/snapshots.rs
+expression: "sql(&m, Dialect::Sqlite, path, query)"
+---
+SELECT "t1"."partner_id" AS "c0", "t1"."code" AS "c1", "t1"."label" AS "c2" FROM "partner_role" AS "t1" WHERE (SELECT "t2"."name" FROM "business_partner" AS "t2" WHERE "t1"."partner_id" = "t2"."id") = 'x' AND (SELECT "t2"."name" FROM "business_partner" AS "t2" WHERE "t1"."partner_id" = "t2"."id") IS NOT NULL ORDER BY "t1"."partner_id" ASC, "t1"."code" ASC

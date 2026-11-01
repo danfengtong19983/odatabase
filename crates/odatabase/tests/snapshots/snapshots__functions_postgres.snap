@@ -1,0 +1,5 @@
+---
+source: crates/odatabase/tests/snapshots.rs
+expression: "sql(&m, Dialect::Postgres, path, query)"
+---
+SELECT "t1"."partner_id" AS "c0", "t1"."code" AS "c1", "t1"."label" AS "c2" FROM "partner_role" AS "t1" WHERE ((strpos("t1"."label", 'a') > 0)) AND ((right("t1"."label", length('b')) = 'b')) ORDER BY "t1"."partner_id" ASC, "t1"."code" ASC

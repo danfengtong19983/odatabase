@@ -22,6 +22,7 @@ pub use error::QueryError;
 pub use expand::ExpandLimits;
 pub use query::{
     Page, ReadRequest, call_scalar, count_collection, literal_args, read_collection, read_entities,
+    read_sql,
 };
 pub use record::{Node, Record, Refs};
 pub use sea_query;

@@ -449,6 +449,17 @@ async fn create_below_parent(app: App) {
     );
     let r = post(
         &app,
+        "BusinessPartners('4')/Roles",
+        json!({"Code": 9, "PartnerId": "1"}),
+    )
+    .await;
+    assert_eq!(
+        r.json()["PartnerId"],
+        "4",
+        "the body cannot pick another parent"
+    );
+    let r = post(
+        &app,
         "BusinessPartners('1')/Projects",
         json!({"Id": 40, "Title": "Delta"}),
     )

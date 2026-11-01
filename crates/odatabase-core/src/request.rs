@@ -113,6 +113,10 @@ impl From<UriError> for ODataError {
 impl From<QueryError> for ODataError {
     fn from(e: QueryError) -> Self {
         let (status, message) = e.response();
+        // Clients get a generic message, so the cause has to be kept here.
+        if status >= 500 {
+            tracing::error!(error = %e, "request failed");
+        }
         Self::new(status, message)
     }
 }

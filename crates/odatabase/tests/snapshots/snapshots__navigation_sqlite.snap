@@ -1,0 +1,5 @@
+---
+source: crates/odatabase/tests/snapshots.rs
+expression: "sql(&m, Dialect::Sqlite, path, query)"
+---
+SELECT "t1"."id" AS "c0", "t1"."version" AS "c1", "t1"."kind" AS "c2" FROM "business_partner" AS "t1" WHERE EXISTS(SELECT 1 FROM "project" AS "t2" INNER JOIN "partner_project" AS "t3" ON "t2"."id" = "t3"."project_id" WHERE "t2"."id" = 1 AND "t3"."partner_id" = "t1"."id") ORDER BY "t1"."id" ASC

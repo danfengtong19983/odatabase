@@ -1,0 +1,93 @@
+---
+source: crates/odatabase/tests/snapshots.rs
+expression: to_csdl_xml(&model())
+---
+<?xml version="1.0" encoding="utf-8"?>
+<edmx:Edmx Version="4.0" xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
+<edmx:DataServices>
+<Schema Namespace="Test" xmlns="http://docs.oasis-open.org/odata/ns/edm">
+<EnumType Name="Abc"><Member Name="A" Value="1"/><Member Name="B" Value="2"/><Member Name="C" Value="3"/></EnumType>
+<EnumType Name="Access" IsFlags="true"><Member Name="None" Value="0"/><Member Name="Read" Value="1"/><Member Name="Write" Value="2"/></EnumType>
+<ComplexType Name="Address">
+<Property Name="Street" Type="Edm.String"/>
+<Property Name="City" Type="Edm.String"/>
+<Property Name="Country" Type="Edm.String" MaxLength="3"/>
+</ComplexType>
+<ComplexType Name="Phone">
+<Property Name="Kind" Type="Edm.String"/>
+<Property Name="Number" Type="Edm.String"/>
+</ComplexType>
+<EntityType Name="BusinessPartner">
+<Key><PropertyRef Name="Id"/></Key>
+<Property Name="Id" Type="Edm.String" Nullable="false"/>
+<Property Name="Version" Type="Edm.Int64" Nullable="false"/>
+<Property Name="Name" Type="Edm.String"/>
+<Property Name="Rating" Type="Edm.Int32"/>
+<Property Name="Revenue" Type="Edm.Decimal"/>
+<Property Name="Score" Type="Edm.Double"/>
+<Property Name="Active" Type="Edm.Boolean" Nullable="false"/>
+<Property Name="Abc" Type="Test.Abc"/>
+<Property Name="Flags" Type="Test.Access"/>
+<Property Name="CreatedAt" Type="Edm.DateTimeOffset"/>
+<Property Name="Founded" Type="Edm.Date"/>
+<Property Name="ExternalId" Type="Edm.Guid"/>
+<Property Name="Address" Type="Test.Address"/>
+<Property Name="Comments" Type="Collection(Edm.String)" Nullable="false"/>
+<Property Name="Phones" Type="Collection(Test.Phone)" Nullable="false"/>
+<NavigationProperty Name="Roles" Type="Collection(Test.Role)" Partner="Partner"/>
+<NavigationProperty Name="Projects" Type="Collection(Test.Project)" Partner="Partners"/>
+<NavigationProperty Name="Owner" Type="Test.BusinessPartner"/>
+<NavigationProperty Name="Owned" Type="Collection(Test.BusinessPartner)"/>
+</EntityType>
+<EntityType Name="Division">
+<Key><PropertyRef Name="Code"/></Key>
+<Property Name="Code" Type="Edm.String" Nullable="false"/>
+<Property Name="ParentCode" Type="Edm.String"/>
+<Property Name="Population" Type="Edm.Int64"/>
+<NavigationProperty Name="Parent" Type="Test.Division"/>
+<NavigationProperty Name="Children" Type="Collection(Test.Division)"/>
+</EntityType>
+<EntityType Name="Organization" BaseType="Test.BusinessPartner">
+<Property Name="Size" Type="Edm.Int32"/>
+</EntityType>
+<EntityType Name="Person" BaseType="Test.BusinessPartner">
+<Property Name="FirstName" Type="Edm.String"/>
+</EntityType>
+<EntityType Name="Project">
+<Key><PropertyRef Name="Id"/></Key>
+<Property Name="Id" Type="Edm.Int32" Nullable="false"/>
+<Property Name="Title" Type="Edm.String" Nullable="false"/>
+<NavigationProperty Name="Partners" Type="Collection(Test.BusinessPartner)" Partner="Projects"/>
+</EntityType>
+<EntityType Name="Role">
+<Key><PropertyRef Name="PartnerId"/><PropertyRef Name="Code"/></Key>
+<Property Name="PartnerId" Type="Edm.String" Nullable="false"/>
+<Property Name="Code" Type="Edm.Int32" Nullable="false"/>
+<Property Name="Label" Type="Edm.String"/>
+<NavigationProperty Name="Partner" Type="Test.BusinessPartner" Nullable="false" Partner="Roles"/>
+</EntityType>
+<EntityType Name="Setting">
+<Key><PropertyRef Name="Id"/></Key>
+<Property Name="Id" Type="Edm.Int32" Nullable="false"/>
+<Property Name="Theme" Type="Edm.String"/>
+</EntityType>
+<EntityType Name="Ticket">
+<Key><PropertyRef Name="Id"/></Key>
+<Property Name="Id" Type="Edm.Int32" Nullable="false"/>
+<Property Name="Title" Type="Edm.String" Nullable="false" MaxLength="20"/>
+<Property Name="Note" Type="Edm.String"/>
+<Property Name="Priority" Type="Edm.Int32"/>
+<Property Name="Version" Type="Edm.Int32" Nullable="false"/>
+<Property Name="Tags" Type="Collection(Edm.String)" Nullable="false"/>
+</EntityType>
+<EntityContainer Name="Container">
+<EntitySet Name="BusinessPartners" EntityType="Test.BusinessPartner"><NavigationPropertyBinding Path="Roles" Target="Roles"/><NavigationPropertyBinding Path="Projects" Target="Projects"/><NavigationPropertyBinding Path="Owner" Target="BusinessPartners"/><NavigationPropertyBinding Path="Owned" Target="BusinessPartners"/></EntitySet>
+<EntitySet Name="Divisions" EntityType="Test.Division"><NavigationPropertyBinding Path="Parent" Target="Divisions"/><NavigationPropertyBinding Path="Children" Target="Divisions"/></EntitySet>
+<EntitySet Name="Projects" EntityType="Test.Project"><NavigationPropertyBinding Path="Partners" Target="BusinessPartners"/></EntitySet>
+<EntitySet Name="Roles" EntityType="Test.Role"><NavigationPropertyBinding Path="Partner" Target="BusinessPartners"/></EntitySet>
+<EntitySet Name="Tickets" EntityType="Test.Ticket"></EntitySet>
+<Singleton Name="Settings" Type="Test.Setting"></Singleton>
+</EntityContainer>
+</Schema>
+</edmx:DataServices>
+</edmx:Edmx>

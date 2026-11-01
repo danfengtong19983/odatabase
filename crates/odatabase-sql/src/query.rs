@@ -608,6 +608,39 @@ pub async fn read_entities(
     session: &Session,
     req: ReadRequest<'_>,
 ) -> Result<Vec<Record>, QueryError> {
+    let (sel, layout) = build_read(ctx, req)?;
+    let rows = fetch_layout(ctx.model, session, &sel, &layout).await?;
+    let mut records = to_records(ctx.model, req.type_name, &layout, rows);
+    read_collections(ctx, session, &mut records, req.type_name, req.options).await?;
+    expand_records(
+        ctx,
+        session,
+        &mut records,
+        &req.options.expand,
+        req.limits,
+        0,
+    )
+    .await?;
+    Ok(records)
+}
+
+/// The SQL of a read, with literals inlined, for logging and tests. Never execute it.
+pub fn read_sql(ctx: &QueryContext<'_>, req: ReadRequest<'_>) -> Result<String, QueryError> {
+    let (sel, _) = build_read(ctx, req)?;
+    Ok(match ctx.dialect {
+        #[cfg(feature = "postgres")]
+        crate::Dialect::Postgres => sel.to_string(sea_query::PostgresQueryBuilder),
+        #[cfg(feature = "sqlite")]
+        crate::Dialect::Sqlite => sel.to_string(sea_query::SqliteQueryBuilder),
+        #[allow(unreachable_patterns)]
+        _ => return Err(QueryError::internal("the dialect is not compiled in")),
+    })
+}
+
+fn build_read(
+    ctx: &QueryContext<'_>,
+    req: ReadRequest<'_>,
+) -> Result<(SelectStatement, Layout), QueryError> {
     let mut tr = Translator::new(ctx.clone());
     let mut sel = Query::select();
     let mut frame = source(&mut tr, &mut sel, req.segments, req.type_name)?;
@@ -638,19 +671,7 @@ pub async fn read_entities(
             None => sel.limit(i64::MAX as u64).offset(skip),
         };
     }
-    let rows = fetch_layout(ctx.model, session, &sel, &layout).await?;
-    let mut records = to_records(ctx.model, req.type_name, &layout, rows);
-    read_collections(ctx, session, &mut records, req.type_name, req.options).await?;
-    expand_records(
-        ctx,
-        session,
-        &mut records,
-        &req.options.expand,
-        req.limits,
-        0,
-    )
-    .await?;
-    Ok(records)
+    Ok((sel, layout))
 }
 
 /// Fetches rows, leaving hidden columns in their natural type.

@@ -451,7 +451,8 @@ fn windowed(
     let skip = options.skip.unwrap_or(0);
     outer.and_where(Expr::col(Alias::new("rn")).gt(skip as i64));
     if let Some(top) = options.top {
-        outer.and_where(Expr::col(Alias::new("rn")).lte((skip + top) as i64));
+        let last = i64::try_from(skip.saturating_add(top)).unwrap_or(i64::MAX);
+        outer.and_where(Expr::col(Alias::new("rn")).lte(last));
     }
     outer.order_by(Alias::new("rn"), Order::Asc);
     outer

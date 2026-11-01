@@ -259,6 +259,29 @@ async fn select_order_page(app: App) {
     assert_eq!(app.ids("BusinessPartners?$top=2&$skip=1").await, ["2", "3"]);
     assert_eq!(app.ids("BusinessPartners?$skip=3").await, ["4"]);
     assert_eq!(app.ids("BusinessPartners?$top=0").await.len(), 0);
+    assert_eq!(
+        app.ids("BusinessPartners?$top=9223372036854775807")
+            .await
+            .len(),
+        4
+    );
+    assert_eq!(
+        app.ids("BusinessPartners?$skip=9223372036854775807")
+            .await
+            .len(),
+        0
+    );
+    let huge = "BusinessPartners?$expand=Roles($top=9223372036854775807;$skip=9223372036854775807)";
+    assert_eq!(
+        app.status(huge).await,
+        200,
+        "extreme windows do not overflow"
+    );
+    assert_eq!(
+        app.status("BusinessPartners?$top=9223372036854775808")
+            .await,
+        400
+    );
     let doc = app
         .ok("BusinessPartners?$count=true&$top=1&$filter=Active")
         .await;

@@ -83,10 +83,13 @@ pub fn apply_option(
     Ok(())
 }
 
+/// Databases take limits as signed 64-bit numbers, so larger values are invalid here.
 fn number(name: &str, value: &str) -> Result<u64, UriError> {
     value
-        .parse()
-        .map_err(|_| UriError::bad_request(format!("{name} must be a non-negative integer")))
+        .parse::<u64>()
+        .ok()
+        .filter(|n| i64::try_from(*n).is_ok())
+        .ok_or_else(|| UriError::bad_request(format!("{name} must be a non-negative integer")))
 }
 
 fn orderby(ctx: &OptionContext, scope: &Scope, value: &str) -> Result<Vec<OrderItem>, UriError> {
