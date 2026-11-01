@@ -1,0 +1,5 @@
+---
+source: crates/odatabase/tests/snapshots.rs
+expression: "sql(&m, Dialect::Sqlite, path, query)"
+---
+SELECT "t1"."id" AS "c0", "t1"."title" AS "c1" FROM "project" AS "t1" WHERE NOT EXISTS(SELECT 1 FROM "business_partner" AS "t2" INNER JOIN "partner_project" AS "t3" ON "t3"."partner_id" = "t2"."id" WHERE "t1"."id" = "t3"."project_id" AND ((("t2"."rating" > 1) IS NOT TRUE))) ORDER BY "t1"."id" ASC

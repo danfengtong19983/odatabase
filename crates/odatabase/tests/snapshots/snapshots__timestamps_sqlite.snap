@@ -1,0 +1,5 @@
+---
+source: crates/odatabase/tests/snapshots.rs
+expression: "sql(&m, Dialect::Sqlite, path, query)"
+---
+SELECT "t1"."code" AS "c0", "t1"."parent_code" AS "c1", "t1"."population" AS "c2" FROM "division" AS "t1" WHERE "t1"."population" > 1 AND (NOT "t1"."code" IN ('a', 'b')) ORDER BY "t1"."code" ASC

@@ -1,0 +1,20 @@
+[package]
+name = "odatabase-uri"
+description = "OData v4 URI parser bound to the service model"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+odatabase-edm.workspace = true
+percent-encoding.workspace = true
+rust_decimal.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+odatabase = { path = "../odatabase" }
+chrono.workspace = true
+
+[lints]
+workspace = true

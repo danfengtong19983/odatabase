@@ -1,0 +1,5 @@
+---
+source: crates/odatabase/tests/snapshots.rs
+expression: "sql(&m, Dialect::Postgres, path, query)"
+---
+SELECT "t1"."id" AS "c0", "t1"."title" AS "c1" FROM "project" AS "t1" ORDER BY (SELECT COUNT(*) FROM "business_partner" AS "t2" INNER JOIN "partner_project" AS "t3" ON "t3"."partner_id" = "t2"."id" WHERE "t1"."id" = "t3"."project_id") DESC NULLS LAST, "t1"."title" ASC NULLS FIRST, "t1"."id" ASC LIMIT 5 OFFSET 2
