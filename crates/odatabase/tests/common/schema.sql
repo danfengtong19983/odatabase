@@ -1,0 +1,81 @@
+CREATE TABLE business_partner (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  version BIGINT NOT NULL DEFAULT 1,
+  name TEXT,
+  rating INTEGER,
+  revenue NUMERIC(12, 2),
+  score DOUBLE PRECISION,
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  abc TEXT,
+  flags BIGINT,
+  created_at TIMESTAMPTZ,
+  founded DATE,
+  external_id UUID,
+  addr_street TEXT,
+  addr_city TEXT,
+  addr_country TEXT,
+  owner_id TEXT REFERENCES business_partner (id),
+  first_name TEXT,
+  size INTEGER
+);
+CREATE TABLE partner_role (
+  partner_id TEXT NOT NULL REFERENCES business_partner (id),
+  code INTEGER NOT NULL,
+  label TEXT,
+  PRIMARY KEY (partner_id, code)
+);
+CREATE TABLE partner_comment (
+  partner_id TEXT NOT NULL REFERENCES business_partner (id),
+  position INTEGER NOT NULL,
+  body TEXT NOT NULL,
+  PRIMARY KEY (partner_id, position)
+);
+CREATE TABLE partner_phone (
+  partner_id TEXT NOT NULL REFERENCES business_partner (id),
+  position INTEGER NOT NULL,
+  kind TEXT,
+  number TEXT,
+  PRIMARY KEY (partner_id, position)
+);
+CREATE TABLE project (
+  id INTEGER PRIMARY KEY,
+  title TEXT NOT NULL
+);
+CREATE TABLE partner_project (
+  partner_id TEXT NOT NULL REFERENCES business_partner (id),
+  project_id INTEGER NOT NULL REFERENCES project (id),
+  PRIMARY KEY (partner_id, project_id)
+);
+CREATE TABLE division (
+  code TEXT PRIMARY KEY,
+  parent_code TEXT REFERENCES division (code),
+  population BIGINT
+);
+CREATE TABLE settings (
+  id INTEGER PRIMARY KEY,
+  theme TEXT
+);
+INSERT INTO business_partner
+  (id, kind, version, name, rating, revenue, score, active, abc, flags, created_at, founded, external_id,
+   addr_street, addr_city, addr_country, owner_id, first_name, size)
+VALUES
+  ('1', 'O', 3, 'First Org', 5, 1200.50, 1.5, TRUE, 'A', 3, '2024-01-15T08:30:00Z', '1999-03-01',
+   '01234567-89ab-cdef-0123-456789abcdef', 'Main 1', 'Berlin', 'DEU', NULL, NULL, 100),
+  ('2', 'O', 1, 'Second Org', 3, 80.25, 2.5, FALSE, 'B', 1, '2024-06-01T12:00:00Z', '2010-07-20',
+   NULL, 'Side 2', 'Paris', 'FRA', '1', NULL, 20),
+  ('3', 'P', 1, 'Third O''Neil', NULL, NULL, NULL, TRUE, NULL, NULL, NULL, NULL,
+   NULL, NULL, NULL, NULL, '1', 'Ann', NULL),
+  ('4', 'P', 1, 'Fourth', 1, 10.00, 0.5, TRUE, 'C', 0, '2023-12-31T23:59:59Z', '2000-02-29',
+   NULL, 'Lane 4', 'Berlin', 'DEU', NULL, 'Bob', NULL);
+INSERT INTO partner_role (partner_id, code, label) VALUES
+  ('1', 1, 'Buyer'), ('1', 2, 'Seller'), ('1', 3, 'Agent'), ('2', 1, 'Buyer'), ('3', 2, NULL);
+INSERT INTO partner_comment (partner_id, position, body) VALUES
+  ('1', 2, 'second'), ('1', 1, 'first'), ('2', 1, 'only');
+INSERT INTO partner_phone (partner_id, position, kind, number) VALUES
+  ('1', 1, 'work', '111'), ('1', 2, 'home', '222');
+INSERT INTO project (id, title) VALUES (10, 'Alpha'), (20, 'Beta'), (30, 'Gamma');
+INSERT INTO partner_project (partner_id, project_id) VALUES ('1', 10), ('1', 20), ('2', 20);
+INSERT INTO division (code, parent_code, population) VALUES
+  ('EU', NULL, 450), ('DE', 'EU', 83), ('BE', 'DE', 3), ('BY', 'DE', 13), ('FR', 'EU', 68);
+INSERT INTO settings (id, theme) VALUES (1, 'dark');

@@ -6,9 +6,33 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = ["postgres", "sqlite", "axum"]
+postgres = ["odatabase-core/postgres"]
+sqlite = ["odatabase-core/sqlite"]
+axum = ["dep:odatabase-axum"]
+
 [dependencies]
+odatabase-axum = { workspace = true, optional = true }
+odatabase-core.workspace = true
 odatabase-edm.workspace = true
 odatabase-macros.workspace = true
+odatabase-sql.workspace = true
+odatabase-uri.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+chrono.workspace = true
+http-body-util.workspace = true
+insta.workspace = true
+rust_decimal.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+testcontainers.workspace = true
+testcontainers-modules.workspace = true
+tokio = { workspace = true }
+tower.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true

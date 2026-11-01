@@ -345,9 +345,7 @@ pub fn promote(l: &ExprType, r: &ExprType) -> ExprType {
     };
     match (l, r) {
         (ExprType::Primitive(a), ExprType::Primitive(b)) => {
-            if !a.is_numeric() {
-                ExprType::Primitive(*a)
-            } else if rank(*a) >= rank(*b) {
+            if rank(*a) >= rank(*b) {
                 ExprType::Primitive(*a)
             } else {
                 ExprType::Primitive(*b)

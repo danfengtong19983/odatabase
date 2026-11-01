@@ -1,5 +1,28 @@
 [package]
 name = "odatabase-sql"
+description = "Translates OData requests to SQL and executes them"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["postgres", "sqlite"]
+postgres = ["sqlx/postgres", "sea-query/backend-postgres", "sea-query-sqlx/sqlx-postgres"]
+sqlite = ["sqlx/sqlite", "sea-query/backend-sqlite", "sea-query-sqlx/sqlx-sqlite"]
+
+[dependencies]
+chrono.workspace = true
+futures.workspace = true
+odatabase-edm.workspace = true
+odatabase-uri.workspace = true
+rust_decimal.workspace = true
+sea-query.workspace = true
+sea-query-sqlx.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+uuid.workspace = true
+
+[lints]
+workspace = true

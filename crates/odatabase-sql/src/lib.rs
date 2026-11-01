@@ -1,1 +1,25 @@
+//! Translates bound OData requests to SQL with `sea-query` and runs them with `sqlx`.
+//!
+//! Identifiers come from the model and literals are bound parameters, so no request text
+//! reaches the SQL string.
 
+mod context;
+mod db;
+mod dialect;
+mod error;
+mod expand;
+mod filter;
+mod query;
+mod record;
+mod search;
+mod values;
+
+pub use context::{ClaimValue, Claims, QueryContext, QueryExtension, TableRef};
+pub use db::{ColumnDecode, Database, Session, Tx};
+pub use dialect::Dialect;
+pub use error::QueryError;
+pub use expand::ExpandLimits;
+pub use query::{Page, ReadRequest, count_collection, read_collection, read_entities};
+pub use record::{Node, Record, Refs};
+pub use sea_query;
+pub use values::{from_sea_string, to_sea};
