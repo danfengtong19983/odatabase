@@ -53,6 +53,16 @@ pub struct Holder {
     pub audit: Nav,
 }
 
+/// A to-one path into a protected type.
+#[derive(ODataEntity)]
+#[odata(table = "secret_note")]
+pub struct Note {
+    #[odata(key)]
+    pub id: i32,
+    #[odata(belongs_to(target = Secret, on(secret_id = "id")))]
+    pub secret: Nav,
+}
+
 struct OnlyActive;
 
 impl QueryExtension for OnlyActive {
@@ -85,6 +95,7 @@ fn service(db: Database) -> Service {
         .entity::<Secret>()
         .entity::<Archived>()
         .entity::<Holder>()
+        .entity::<Note>()
         .entity::<ActivePartner>()
         .query_extension::<ActivePartner>(OnlyActive)
         .function("AdminOnly", |f| {
@@ -529,6 +540,51 @@ async fn post_cannot_probe_hidden_keys(app: App) {
     );
 }
 
+async fn to_one_paths_respect_protection(app: App) {
+    assert_eq!(
+        app.status("Notes?$orderby=Secret/Body").await,
+        403,
+        "a missing claim denies access"
+    );
+    let user = as_user(&app, acme());
+    let ordered = user
+        .column("Notes?$orderby=Secret/Body desc,Id", "Id")
+        .await;
+    assert_eq!(
+        ids(ordered),
+        [1, 2, 3],
+        "hidden targets read as null, and no note is lost"
+    );
+    let filtered = user.column("Notes?$filter=Secret/Body eq 'b'", "Id").await;
+    assert!(filtered.is_empty(), "a hidden value cannot be matched");
+    let filtered = user.column("Notes?$filter=Secret/Body eq 'a'", "Id").await;
+    assert_eq!(ids(filtered), [1]);
+    let doc = user
+        .ok("Notes?$apply=groupby((Secret/Body),aggregate($count as N))")
+        .await;
+    assert_eq!(doc["value"][0]["Secret"], json!(null));
+    assert_eq!(
+        doc["value"][0]["N"], 2,
+        "hidden values collapse into the null group"
+    );
+    assert_eq!(doc["value"][1]["Secret"]["Body"], "a");
+    assert_eq!(
+        doc["value"].as_array().unwrap().len(),
+        2,
+        "no hidden value appears"
+    );
+    let total = user
+        .ok("Notes?$apply=aggregate(Secret/Level with sum as T)")
+        .await;
+    assert_eq!(total["value"][0]["T"], 1, "hidden values are not summed");
+    assert_eq!(user.status("Notes?$orderby=Secret/Salary").await, 403);
+    assert_eq!(
+        user.status("Notes?$apply=groupby((Secret/Salary))").await,
+        403
+    );
+    assert_eq!(user.status("Notes?$filter=Secret/Salary gt 1").await, 403);
+}
+
 async fn query_extensions(app: App) {
     let active = "ActivePartners?$apply=aggregate($count as N)";
     assert_eq!(
@@ -581,6 +637,7 @@ mod run {
         aggregates_respect_protection,
         upsert_and_deep_update_respect_protection,
         post_cannot_probe_hidden_keys,
+        to_one_paths_respect_protection,
         query_extensions,
         batches_keep_the_caller,
     );

@@ -170,3 +170,8 @@ CREATE TABLE locked (
   code TEXT
 );
 INSERT INTO locked (id, name, code) VALUES (1, 'a', 'x'), (2, 'b', 'y');
+CREATE TABLE secret_note (
+  id INTEGER PRIMARY KEY,
+  secret_id INTEGER REFERENCES secret (id)
+);
+INSERT INTO secret_note (id, secret_id) VALUES (1, 1), (2, 2), (3, 3);

@@ -36,6 +36,44 @@ pub enum Database {
     Sqlite(sqlx::SqlitePool),
 }
 
+/// Connection settings for [`Database::connect_postgres`].
+#[cfg(feature = "postgres")]
+#[derive(Clone, Copy, Debug)]
+pub struct PostgresOptions {
+    pub max_connections: u32,
+    /// Postgres cancels statements that run longer. `None` lets them run forever.
+    pub statement_timeout: Option<std::time::Duration>,
+}
+
+#[cfg(feature = "postgres")]
+impl Default for PostgresOptions {
+    fn default() -> Self {
+        Self {
+            max_connections: 16,
+            statement_timeout: Some(std::time::Duration::from_secs(30)),
+        }
+    }
+}
+
+#[cfg(feature = "postgres")]
+impl Database {
+    /// Connects with a statement timeout, which is the only limit that stops a query in the
+    /// database. A pool built by hand needs the `statement_timeout` connect option for this.
+    pub async fn connect_postgres(url: &str, options: PostgresOptions) -> Result<Self, QueryError> {
+        use std::str::FromStr;
+        let mut connect = sqlx::postgres::PgConnectOptions::from_str(url)?;
+        if let Some(timeout) = options.statement_timeout {
+            let millis = timeout.as_millis().to_string();
+            connect = connect.options([("statement_timeout", millis.as_str())]);
+        }
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(options.max_connections)
+            .connect_with(connect)
+            .await?;
+        Ok(Self::Postgres(pool))
+    }
+}
+
 #[cfg(feature = "postgres")]
 impl From<sqlx::PgPool> for Database {
     fn from(pool: sqlx::PgPool) -> Self {

@@ -18,6 +18,8 @@ mod write;
 
 pub use aggregate::read_aggregated;
 pub use context::{ClaimValue, Claims, QueryContext, QueryExtension, TableRef};
+#[cfg(feature = "postgres")]
+pub use db::PostgresOptions;
 pub use db::{ColumnDecode, Database, Session, Tx};
 pub use dialect::Dialect;
 pub use error::QueryError;
