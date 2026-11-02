@@ -370,6 +370,10 @@ async fn aggregates_respect_protection(app: App) {
         "Secrets?$apply=filter(Salary gt 1)/aggregate($count as N)",
         "Secrets?$apply=compute(Salary mul 1 as S)/aggregate(S with sum as T)",
         "Secrets?$apply=compute(Salary mul 1 as S)&$select=Id",
+        "Secrets?$compute=Salary mul 1 as S",
+        "Secrets?$compute=Salary mul 1 as S&$select=Id",
+        "Secrets(1)?$compute=Salary mul 1 as S",
+        "$entity?$id=Secrets(1)&$compute=Salary mul 1 as S",
     ];
     for uri in hidden {
         assert_eq!(user.status(uri).await, 403, "{uri}");
@@ -453,6 +457,21 @@ async fn aggregates_respect_protection(app: App) {
             .await["value"][0]["N"],
         1,
         "the group opens the navigation, not the rows"
+    );
+
+    let doc = user.ok("Secrets?$compute=Level mul 2 as D").await;
+    assert_eq!(
+        doc["value"].as_array().unwrap().len(),
+        1,
+        "permitted rows only"
+    );
+    assert_eq!(doc["value"][0]["D"], 2);
+    assert_eq!(app.status("$entity?$id=Secrets(1)").await, 403);
+    assert_eq!(user.status("$entity?$id=Secrets(1)").await, 200);
+    assert_eq!(
+        user.status("$entity?$id=Secrets(3)").await,
+        404,
+        "another tenant's row looks missing through $id too"
     );
 
     let hr = as_user(&app, acme().with_group("hr"));

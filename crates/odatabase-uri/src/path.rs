@@ -67,9 +67,27 @@ pub fn parse_with(
     };
     let mut scope = scope;
     let mut applied_expand = Vec::new();
-    if let Some((_, text)) = raw.iter().find(|(n, _)| n == "$apply") {
+    let apply = raw.iter().find(|(n, _)| n == "$apply").map(|(_, v)| v);
+    let compute = raw.iter().find(|(n, _)| n == "$compute").map(|(_, v)| v);
+    // `$compute` acts like a last step of `$apply`, with the options after it seeing its results.
+    // Each item is a step of its own, so that it sees the ones before it.
+    let computed = compute.map(|c| {
+        let steps: Vec<String> = split_top_level(c, ',')
+            .iter()
+            .map(|item| format!("compute({item})"))
+            .collect();
+        steps.join("/")
+    });
+    let pipeline = match (apply, computed) {
+        (Some(a), Some(c)) => Some(format!("{a}/{c}")),
+        (Some(a), None) => Some(a.clone()),
+        (None, Some(c)) => Some(c),
+        (None, None) => None,
+    };
+    if let Some(text) = &pipeline {
         let entity = match segments.last().map(Segment::target) {
             Some(Target::EntityCollection(t)) => t,
+            Some(Target::Entity(t)) if apply.is_none() => t,
             Some(Target::Count) => match segments.iter().rev().nth(1).map(Segment::target) {
                 Some(Target::EntityCollection(t)) => t,
                 _ => {
@@ -103,7 +121,7 @@ pub fn parse_with(
             if raw.iter().filter(|(n, _)| n == name).count() > 1 {
                 return Err(UriError::bad_request(format!("{name} is given twice")));
             }
-            if name != "$apply" {
+            if name != "$apply" && name != "$compute" {
                 apply_option(&ctx, &scope, &mut options, name, value)?;
             }
         } else if !name.starts_with('@') {
@@ -115,6 +133,22 @@ pub fn parse_with(
         path: segments,
         options,
     })
+}
+
+/// Takes `$id` out of the query string of a `$entity` request.
+pub fn take_entity_id(query: &str) -> Result<(Option<String>, String), UriError> {
+    let (mut id, mut rest) = (None, Vec::new());
+    for part in query.split('&').filter(|p| !p.is_empty()) {
+        let (name, value) = part.split_once('=').unwrap_or((part, ""));
+        if decode(name)? == "$id" {
+            if id.replace(decode(value)?).is_some() {
+                return Err(UriError::bad_request("$id is given twice"));
+            }
+        } else {
+            rest.push(part);
+        }
+    }
+    Ok((id, rest.join("&")))
 }
 
 fn decode_query(query: &str) -> Result<Vec<(String, String)>, UriError> {
@@ -292,7 +326,7 @@ impl PathBuilder<'_> {
                 self.push(Segment::Batch);
                 return Ok(());
             }
-            "$all" | "$crossjoin" | "$entity" => {
+            "$all" | "$crossjoin" => {
                 return Err(UriError::not_implemented(format!(
                     "{text} is not supported"
                 )));

@@ -464,6 +464,56 @@ foreach (var query in new[] {
     catch (Exception e) { Report(url, e); }
 }
 
+// $compute and date arithmetic: Microsoft's binder must accept each, and the server must answer.
+foreach (var compute in new[] {
+    "Rating mul 2 as Twice",
+    "concat(Name,'!') as Shout,year(Founded) as Born",
+    "CreatedAt add duration'P1D' as Tomorrow",
+    "CreatedAt sub 2024-01-01T00:00:00Z as Age",
+    "Founded add duration'P1D' as Next",
+}) {
+    var url = "BusinessPartners?$compute=" + compute;
+    try
+    {
+        var uri = new Uri($"{root}/BusinessPartners?$compute={Uri.EscapeDataString(compute)}");
+        new Microsoft.OData.UriParser.ODataUriParser(model, new Uri(root + "/"), uri).ParseCompute();
+        (await Send(HttpMethod.Get, uri.ToString())).Ensure(url);
+        Report(url);
+    }
+    catch (Exception e) { Report(url, e); }
+}
+foreach (var filter in new[] {
+    "CreatedAt add duration'P1D' gt 2024-06-02T11:00:00Z",
+    "CreatedAt sub duration'PT1H' lt now()",
+    "now() sub CreatedAt gt duration'P1D'",
+    "Founded add duration'P1D' eq 2000-03-01",
+    "Founded sub 2000-02-28 eq duration'P1D'",
+    "CreatedAt lt maxdatetime()",
+    "CreatedAt gt mindatetime()",
+}) {
+    var url = "BusinessPartners?$filter=" + filter;
+    try
+    {
+        var uri = new Uri($"{root}/BusinessPartners?$filter={Uri.EscapeDataString(filter)}");
+        new Microsoft.OData.UriParser.ODataUriParser(model, new Uri(root + "/"), uri).ParseFilter();
+        (await Send(HttpMethod.Get, uri.ToString())).Ensure(url);
+        Report(url);
+    }
+    catch (Exception e) { Report(url, e); }
+}
+try
+{
+    var id = Uri.EscapeDataString("BusinessPartners('1')");
+    var r = await Send(HttpMethod.Get, $"$entity?$id={id}");
+    r.Ensure("$entity");
+    using var mr = new ODataMessageReader((IODataResponseMessage)r, Settings(), model);
+    var (set, type) = Resolve("BusinessPartners");
+    var reader = mr.CreateODataResourceReader((IEdmEntitySetBase)set, type);
+    while (reader.Read()) { }
+    Report("$entity?$id= reads as a resource");
+}
+catch (Exception e) { Report("$entity", e); }
+
 // Lambdas: Microsoft's binder must accept each filter, and the server must answer it.
 foreach (var filter in new[] {
     "Roles/any()",

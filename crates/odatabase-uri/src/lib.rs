@@ -14,4 +14,4 @@ mod path;
 pub use apply::SUPPORTED as APPLY_TRANSFORMATIONS;
 pub use ast::*;
 pub use error::UriError;
-pub use path::{Limits, parse, parse_with};
+pub use path::{Limits, parse, parse_with, take_entity_id};

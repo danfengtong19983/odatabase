@@ -330,7 +330,8 @@ impl ExprParser<'_> {
             self.enter()?;
             let inner = self.unary()?;
             self.depth -= 1;
-            if !inner.ty().is_numeric() {
+            let duration = inner.ty() == ExprType::Primitive(PrimitiveKind::Duration);
+            if !inner.ty().is_numeric() && !duration {
                 return Err(UriError::bad_request("cannot negate a non-numeric value"));
             }
             return Ok(Expr::Negate(Box::new(inner)));
@@ -781,17 +782,12 @@ fn require_bool(e: &Expr) -> Result<(), UriError> {
 }
 
 fn arithmetic(op: BinaryOp, l: Expr, r: Expr) -> Result<Expr, UriError> {
-    use PrimitiveKind as P;
-    let allowed = |t: &ExprType| match t {
-        ExprType::Null => true,
-        ExprType::Primitive(k) => {
-            k.is_numeric()
-                || (matches!(op, BinaryOp::Add | BinaryOp::Sub)
-                    && matches!(k, P::Date | P::DateTimeOffset | P::Duration))
-        }
-        _ => false,
+    let (lt, rt) = (l.ty(), r.ty());
+    let defined = match is_temporal(&lt) || is_temporal(&rt) {
+        true => temporal_result(op, &lt, &rt).is_some(),
+        false => lt.is_numeric() && rt.is_numeric(),
     };
-    if !allowed(&l.ty()) || !allowed(&r.ty()) {
+    if !defined {
         return Err(UriError::bad_request(format!(
             "{op:?} is not defined for {:?} and {:?}",
             l.ty(),

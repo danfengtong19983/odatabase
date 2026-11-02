@@ -134,8 +134,11 @@ pub fn aggregated_list(options: &QueryOptions) -> String {
     format!("({})", parts.join(","))
 }
 
-/// `(*,Alias)` for entities that `$apply` extended with computed properties.
+/// `(*,Alias)` for entities extended with computed properties. `$select` names its own list.
 pub fn computed_list(options: &QueryOptions) -> Option<String> {
+    if options.select.is_some() {
+        return None;
+    }
     let aliases: Vec<&str> = options
         .apply
         .iter()

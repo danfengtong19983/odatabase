@@ -459,10 +459,10 @@ impl Expr {
             Self::Not(_) | Self::In(..) | Self::Lambda { .. } | Self::IsOf(..) => boolean,
             Self::Negate(e) => e.ty(),
             Self::Binary(op, l, r) => match op {
-                BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Mod => {
-                    promote(&l.ty(), &r.ty())
+                BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Mod | BinaryOp::Div => {
+                    let (l, r) = (l.ty(), r.ty());
+                    temporal_result(*op, &l, &r).unwrap_or_else(|| promote(&l, &r))
                 }
-                BinaryOp::Div => promote(&l.ty(), &r.ty()),
                 BinaryOp::DivBy => ExprType::Primitive(PrimitiveKind::Decimal),
                 _ => boolean,
             },
@@ -470,6 +470,43 @@ impl Expr {
             Self::Cast(_, t) => t.clone(),
             Self::Function { ty, .. } | Self::Computed(_, ty) => ty.clone(),
         }
+    }
+}
+
+/// Whether a type takes part in date and duration arithmetic.
+pub fn is_temporal(t: &ExprType) -> bool {
+    use PrimitiveKind as P;
+    matches!(
+        t,
+        ExprType::Primitive(P::Date | P::DateTimeOffset | P::Duration)
+    )
+}
+
+/// The result of arithmetic on dates and durations, if the combination is defined.
+pub fn temporal_result(op: BinaryOp, l: &ExprType, r: &ExprType) -> Option<ExprType> {
+    use BinaryOp as B;
+    use ExprType as T;
+    use PrimitiveKind as P;
+    let duration = T::Primitive(P::Duration);
+    match (op, l, r) {
+        (B::Add | B::Sub, T::Null, t) | (B::Add | B::Sub, t, T::Null) if is_temporal(t) => {
+            Some(t.clone())
+        }
+        (
+            B::Add | B::Sub,
+            T::Primitive(P::Date | P::DateTimeOffset | P::Duration),
+            T::Primitive(P::Duration),
+        ) => Some(l.clone()),
+        (B::Sub, T::Primitive(P::DateTimeOffset), T::Primitive(P::DateTimeOffset))
+        | (B::Sub, T::Primitive(P::Date), T::Primitive(P::Date)) => Some(duration),
+        (B::Mul, T::Primitive(P::Duration), n)
+        | (B::Mul, n, T::Primitive(P::Duration))
+        | (B::Div, T::Primitive(P::Duration), n)
+            if n.is_numeric() =>
+        {
+            Some(duration)
+        }
+        _ => None,
     }
 }
 
