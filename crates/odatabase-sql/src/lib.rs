@@ -4,6 +4,7 @@
 //! reaches the SQL string.
 
 mod aggregate;
+mod changes;
 mod context;
 mod db;
 mod dialect;
@@ -17,6 +18,9 @@ mod values;
 mod write;
 
 pub use aggregate::read_aggregated;
+pub use changes::{
+    ChangeKind, LoggedChange, change_floor, change_position, read_changes, record_change,
+};
 pub use context::{ClaimValue, Claims, QueryContext, QueryExtension, TableRef};
 #[cfg(feature = "postgres")]
 pub use db::PostgresOptions;

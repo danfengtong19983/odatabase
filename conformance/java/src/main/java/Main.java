@@ -16,6 +16,7 @@ import org.apache.olingo.client.api.communication.request.cud.UpdateType;
 import org.apache.olingo.client.api.communication.request.retrieve.ODataEntityRequest;
 import org.apache.olingo.client.api.communication.response.ODataBatchResponse;
 import org.apache.olingo.client.api.communication.response.ODataResponse;
+import org.apache.olingo.client.api.domain.ClientDelta;
 import org.apache.olingo.client.api.domain.ClientEntity;
 import org.apache.olingo.client.api.domain.ClientEntitySet;
 import org.apache.olingo.client.api.domain.ClientInvokeResult;
@@ -271,6 +272,19 @@ public class Main {
       expect(e.getEditLink() != null, "no edit link");
       expect(e.getNavigationLink("Roles") != null, "no navigation link");
       return e.getEditLink().toString();
+    });
+    check("change tracking", () -> {
+      var first = client.getRetrieveRequestFactory().getEntitySetRequest(set("Notes").build());
+      first.setPrefer(client.newPreferences().trackChanges());
+      var read = first.execute();
+      expect("odata.track-changes".equals(read.getHeader("Preference-Applied").iterator().next()), "not applied");
+      URI link = read.getBody().getDeltaLink();
+      expect(link != null, "no delta link");
+      client.getCUDRequestFactory().getDeleteRequest(set("Notes").appendKeySegment(2).build()).execute();
+      ClientDelta delta = client.getRetrieveRequestFactory().getDeltaRequest(link).execute().getBody();
+      expect(delta.getDeletedEntities().size() == 1, delta.getDeletedEntities().size() + " deleted");
+      expect(delta.getDeltaLink() != null, "no next link");
+      return delta.getDeletedEntities().get(0).getId() + " " + delta.getDeletedEntities().get(0).getReason();
     });
     System.out.println("\n" + passed + " passed, " + failed + " failed");
     System.exit(failed == 0 ? 0 : 1);

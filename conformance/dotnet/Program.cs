@@ -364,6 +364,79 @@ foreach (var query in new[] {
     catch (Exception e) { Report(url, e); }
 }
 
+// Change tracking: Microsoft's delta reader must accept each page, and a link must lead on.
+try
+{
+    var start = new HttpRequestMessage(HttpMethod.Get, $"{root}/Notes");
+    start.Headers.TryAddWithoutValidation("Prefer", "odata.track-changes");
+    start.Headers.Accept.ParseAdd("application/json");
+    var res = await http.SendAsync(start);
+    var first = System.Text.Json.JsonDocument.Parse(await res.Content.ReadAsByteArrayAsync());
+    var link = first.RootElement.GetProperty("@odata.deltaLink").GetString();
+    var applied = string.Join(",", res.Headers.GetValues("Preference-Applied"));
+    Report($"Prefer: odata.track-changes -> {applied}");
+
+    (await Send(HttpMethod.Post, "Notes", "{\"Id\":1,\"Title\":\"new\"}")).Ensure("create", 201);
+    (await Send(HttpMethod.Patch, "Notes(2)", "{\"Title\":\"changed\"}")).Ensure("update", 204);
+    (await Send(HttpMethod.Delete, "Notes(3)")).Ensure("delete", 204);
+
+    var (set, type) = Resolve("Notes");
+    string ReadDelta(Response r, out int rows, out int deleted)
+    {
+        using var mr = new ODataMessageReader((IODataResponseMessage)r, Settings(), model);
+        var reader = mr.CreateODataDeltaResourceSetReader((IEdmEntitySetBase)set, type);
+        (rows, deleted) = (0, 0);
+        Uri next = null;
+        while (reader.Read())
+        {
+            if (reader.State == ODataReaderState.ResourceEnd) rows++;
+            if (reader.State == ODataReaderState.DeletedResourceEnd) deleted++;
+            if (reader.State == ODataReaderState.DeltaResourceSetEnd) next = ((ODataDeltaResourceSet)reader.Item).DeltaLink;
+        }
+        return next?.ToString();
+    }
+    var page = await Send(HttpMethod.Get, link);
+    page.Ensure(link);
+    var following = ReadDelta(page, out var changed, out var removed);
+    if (changed != 2 || removed != 1 || following == null) throw new Exception($"{changed} rows, {removed} removed, link {following}");
+    Report($"delta reader: {changed} changed, {removed} removed");
+    var empty = await Send(HttpMethod.Get, following);
+    ReadDelta(empty, out changed, out removed);
+    if (changed != 0 || removed != 0) throw new Exception($"{changed} rows, {removed} removed");
+    Report("the next delta link starts after those changes");
+
+    // Microsoft's delta writer, in both payload versions: PATCH on the collection.
+    foreach (var (version, id) in new[] { (ODataVersion.V4, 40), (ODataVersion.V401, 41) })
+    {
+        var body = new MemoryStream();
+        var outgoing = new RequestMessage(body);
+        var settings = new ODataMessageWriterSettings { BaseUri = new Uri(root + "/"), Version = version, EnableMessageStreamDisposal = false };
+        settings.ODataUri = new ODataUri { ServiceRoot = new Uri(root + "/") };
+        using (var mw = new ODataMessageWriter((IODataRequestMessage)outgoing, settings, model))
+        {
+            var w = mw.CreateODataDeltaResourceSetWriter((IEdmEntitySetBase)set, type);
+            w.WriteStart(new ODataDeltaResourceSet());
+            w.WriteStart(new ODataResource
+            {
+                Properties = new[] { new ODataProperty { Name = "Id", Value = id }, new ODataProperty { Name = "Title", Value = "written" } },
+            });
+            w.WriteEnd();
+            w.WriteStart(new ODataDeletedResource(new Uri($"{root}/Notes(1)"), DeltaDeletedEntryReason.Deleted));
+            w.WriteEnd();
+            w.WriteEnd();
+        }
+        var text = Encoding.UTF8.GetString(body.ToArray());
+        (await Send(HttpMethod.Post, "Notes", "{\"Id\":1,\"Title\":\"again\"}")).Status();
+        var patched = await Send(HttpMethod.Patch, "Notes", text);
+        patched.Ensure(text, 204);
+        (await Send(HttpMethod.Get, $"Notes({id})")).Ensure($"Notes({id})");
+        var gone = await Send(HttpMethod.Get, "Notes(1)");
+        if (gone.StatusCode != 404) throw new Exception($"Notes(1) survived {text}");
+        Report($"delta writer, OData {version}: PATCH /Notes");
+    }
+}
+catch (Exception e) { Report("change tracking", e); }
+
 // Transformations of Aggregation 4.0 that the Microsoft parser predates: the server must answer.
 foreach (var query in new[] {
     "concat(groupby((Abc),aggregate(Rating with sum as Total)),aggregate(Rating with sum as Total))",
@@ -437,6 +510,7 @@ class Response : IODataResponseMessage
     public string GetHeader(string name) => Headers.FirstOrDefault(h => string.Equals(h.Key, name, StringComparison.OrdinalIgnoreCase)).Value;
     public void SetHeader(string name, string value) { }
     public Stream GetStream() => new MemoryStream(Body);
+    public int Status() => StatusCode;
     public void Ensure(string name, int expected = 200)
     {
         if (StatusCode != expected) throw new Exception($"{name}: HTTP {StatusCode}: {Encoding.UTF8.GetString(Body)}");

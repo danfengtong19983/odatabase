@@ -21,8 +21,29 @@ pub struct EntityPayload {
     pub nested: Vec<(String, Vec<EntityPayload>)>,
     /// `Nav@odata.bind`: navigation name and the URLs of existing entities.
     pub binds: Vec<(String, Vec<String>)>,
+    /// `Nav@delta`: changes to some members of a collection navigation.
+    pub deltas: Vec<(String, Vec<DeltaItem>)>,
     /// `@odata.etag` of a nested entity, checked before it is updated.
     pub etag: Option<String>,
+}
+
+/// One entry of a delta payload.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DeltaItem {
+    /// An entity to create or update. `id` names it when the properties don't.
+    Entity {
+        id: Option<String>,
+        entity: EntityPayload,
+    },
+    /// An existing entity to relate, given only by its URL.
+    Link(String),
+    /// An entity to take away, named by `id` or by its key properties. With `deleted` it stops
+    /// existing, otherwise only the relationship ends.
+    Removed {
+        id: Option<String>,
+        entity: EntityPayload,
+        deleted: bool,
+    },
 }
 
 impl EntityPayload {
@@ -48,6 +69,81 @@ pub fn parse_entity(
     read_entity(model, declared, &obj, 0)
 }
 
+/// Parses the body of `PATCH` on a collection: a delta payload for entities of `declared`.
+pub fn parse_delta(
+    model: &Model,
+    declared: &str,
+    body: &[u8],
+) -> Result<Vec<DeltaItem>, ODataError> {
+    let doc: Json = serde_json::from_slice(body)
+        .map_err(|e| ODataError::bad_request(format!("invalid JSON: {e}")))?;
+    let items = doc
+        .get("value")
+        .and_then(Json::as_array)
+        .ok_or_else(|| ODataError::bad_request("expected a delta payload with a value array"))?;
+    read_delta(model, declared, items, 0)
+}
+
+fn read_delta(
+    model: &Model,
+    declared: &str,
+    items: &[Json],
+    depth: u32,
+) -> Result<Vec<DeltaItem>, ODataError> {
+    items
+        .iter()
+        .map(|item| {
+            let obj = item
+                .as_object()
+                .ok_or_else(|| ODataError::bad_request("a delta entry must be an object"))?;
+            read_delta_item(model, declared, obj, depth)
+        })
+        .collect()
+}
+
+fn read_delta_item(
+    model: &Model,
+    declared: &str,
+    obj: &Map<String, Json>,
+    depth: u32,
+) -> Result<DeltaItem, ODataError> {
+    let text = |name: &str| obj.get(name).and_then(Json::as_str).map(str::to_owned);
+    let removed = obj.get("@removed").or(obj.get("@odata.removed"));
+    let context = text("@context").or(text("@odata.context"));
+    let tombstone = context.is_some_and(|c| c.ends_with("$deletedEntity"));
+    let mut id = text("@id").or(text("@odata.id"));
+    if removed.is_none() && !tombstone {
+        if let (Some(url), true) = (&id, obj.keys().all(|k| k.contains('@'))) {
+            return Ok(DeltaItem::Link(url.clone()));
+        }
+        let entity = read_entity(model, declared, obj, depth)?;
+        return Ok(DeltaItem::Entity { id, entity });
+    }
+    let reason = removed
+        .and_then(|r| r.get("reason"))
+        .or(obj.get("reason"))
+        .map(|r| r.as_str().unwrap_or_default());
+    let deleted = match reason {
+        Some("deleted") => true,
+        Some("changed") | None => false,
+        Some(other) => {
+            return Err(ODataError::bad_request(format!("invalid reason {other}")));
+        }
+    };
+    let mut rest = obj.clone();
+    if tombstone {
+        id = id.or(text("id"));
+        rest.remove("id");
+        rest.remove("reason");
+    }
+    let entity = read_entity(model, declared, &rest, depth)?;
+    Ok(DeltaItem::Removed {
+        id,
+        entity,
+        deleted,
+    })
+}
+
 const MAX_NESTING: u32 = 16;
 
 fn read_entity(
@@ -65,6 +161,7 @@ fn read_entity(
         values: Vec::new(),
         nested: Vec::new(),
         binds: Vec::new(),
+        deltas: Vec::new(),
         etag: obj
             .get("@odata.etag")
             .or(obj.get("@etag"))
@@ -94,8 +191,22 @@ fn read_entity(
             out.binds.push((nav.to_owned(), urls));
             continue;
         }
-        if name.ends_with("@delta") {
-            return Err(ODataError::not_implemented("delta payloads"));
+        if let Some(nav) = name
+            .strip_suffix("@odata.delta")
+            .or(name.strip_suffix("@delta"))
+        {
+            let n = model
+                .navigation(&type_name, nav)
+                .ok_or_else(|| ODataError::bad_request(format!("unknown navigation {nav}")))?;
+            if !n.collection {
+                return Err(ODataError::bad_request(format!("{nav} is single-valued")));
+            }
+            let Json::Array(items) = json else {
+                return Err(ODataError::bad_request(format!("{name} must be an array")));
+            };
+            let items = read_delta(model, &n.target, items, depth + 1)?;
+            out.deltas.push((nav.to_owned(), items));
+            continue;
         }
         if name.contains('@') {
             continue;

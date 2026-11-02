@@ -7,18 +7,23 @@ use odatabase_uri::{ExpandItem, QueryOptions, SelectItem, Transformation};
 /// The canonical key predicate of `rec`, such as `('a')` or `(Code=1,Id='a')`.
 pub fn key_predicate(model: &Model, type_name: &str, rec: &Record) -> Option<String> {
     let key = model.key_of(type_name);
-    let values: Vec<(&String, &Value)> = key
+    let values: Vec<(String, Value)> = key
         .iter()
-        .map(|k| Some((k, rec.value(k)?)))
+        .map(|k| Some((k.clone(), rec.value(k)?.clone())))
         .collect::<Option<_>>()?;
-    if let [(_, v)] = values.as_slice() {
-        return Some(format!("({})", encode(&v.to_uri_literal())));
+    Some(key_text(&values))
+}
+
+/// The key predicate of named values.
+pub fn key_text(key: &[(String, Value)]) -> String {
+    if let [(_, v)] = key {
+        return format!("({})", encode(&v.to_uri_literal()));
     }
-    let parts: Vec<String> = values
+    let parts: Vec<String> = key
         .iter()
         .map(|(k, v)| format!("{k}={}", encode(&v.to_uri_literal())))
         .collect();
-    Some(format!("({})", parts.join(",")))
+    format!("({})", parts.join(","))
 }
 
 /// Escapes the characters that would break a path segment.

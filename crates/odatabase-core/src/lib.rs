@@ -5,6 +5,7 @@
 mod batch;
 mod capabilities;
 mod change;
+mod delta;
 mod format;
 mod json;
 mod operation;
@@ -29,7 +30,7 @@ pub use operation::{
     Binding, OperationBuilder, OperationContext, OperationHandler, OperationResult,
 };
 pub use paging::{DEFAULT_PAGE_SIZE, OffsetPaging, PageRequest, PageResult, PagingProvider};
-pub use payload::{EntityPayload, PropertyValue};
+pub use payload::{DeltaItem, EntityPayload, PropertyValue};
 pub use request::{ODataError, ODataRequest, ODataResponse};
 pub use service::{Config, Service, ServiceBuilder};
 pub use transient::{TransientCalculator, TransientRow};

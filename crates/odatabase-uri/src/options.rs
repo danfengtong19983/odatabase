@@ -67,6 +67,7 @@ pub fn apply_option(
         }
         "$search" => o.search = Some(search(value)?),
         "$skiptoken" => o.skiptoken = Some(value.to_owned()),
+        "$deltatoken" => o.deltatoken = Some(value.to_owned()),
         "$format" => o.format = Some(value.to_owned()),
         // The target of `DELETE .../$ref?$id=...`, read by the write path.
         "$id" => o.custom.push((name.to_owned(), value.to_owned())),

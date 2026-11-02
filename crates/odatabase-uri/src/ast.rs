@@ -253,6 +253,7 @@ pub struct QueryOptions {
     pub count: bool,
     pub search: Option<SearchExpr>,
     pub skiptoken: Option<String>,
+    pub deltatoken: Option<String>,
     pub format: Option<String>,
     /// Query options without a `$` prefix, passed through to `nextLink`.
     pub custom: Vec<(String, String)>,

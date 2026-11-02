@@ -2,9 +2,11 @@
 
 use crate::change::{ChangeContext, EntityKey};
 use crate::format::Format;
-use crate::payload::{EntityPayload, PropertyValue, parse_entity, read_property};
+use crate::payload::{
+    DeltaItem, EntityPayload, PropertyValue, parse_delta, parse_entity, read_property,
+};
 use crate::read::{etag_matches, language, split_entity_path};
-use crate::url::entity_id;
+use crate::url::{entity_id, key_text as url_key_text, set_of};
 use crate::{ODataError, ODataRequest, ODataResponse, Service};
 use chrono::Utc;
 use futures::future::BoxFuture;
@@ -13,7 +15,7 @@ use odatabase_edm::{
     EntityType, Inheritance, Model, NavigationProperty, PrimitiveKind, Property, TypeKind, Value,
 };
 use odatabase_sql::{
-    ColumnValue, ColumnWrite, Page, ReadRequest, Session, delete as sql_delete,
+    ChangeKind, ColumnValue, ColumnWrite, Page, ReadRequest, Session, delete as sql_delete,
     insert as sql_insert, read_columns, read_entities, update as sql_update,
 };
 use odatabase_uri::{ExpandItem, ODataUri, QueryOptions, Segment, Target};
@@ -282,6 +284,9 @@ impl Service {
             }
             (&Method::POST, Target::EntityCollection(t)) => self.create(req, uri, t, session).await,
             (&Method::POST, Target::Ref { .. }) => self.add_link(req, uri, session).await,
+            (&Method::PATCH, Target::EntityCollection(t)) => {
+                self.patch_collection(req, uri, t, session).await
+            }
             (&Method::PATCH | &Method::PUT, Target::Entity(t)) => {
                 self.replace_entity(req, uri, t, session).await
             }
@@ -455,6 +460,11 @@ impl Service {
                 .ok_or_else(|| ODataError::new(500, "unknown type"))?;
             if t.is_abstract {
                 return Err(ODataError::bad_request(format!("{type_name} is abstract")));
+            }
+            if !payload.deltas.is_empty() {
+                return Err(ODataError::bad_request(
+                    "a delta payload needs an existing entity",
+                ));
             }
             let l = layout(model, type_name)?;
             let mut writes = TableWrites::default();
@@ -668,6 +678,8 @@ impl Service {
                     }
                 }
             }
+            self.record(session, type_name, &key, ChangeKind::Created)
+                .await?;
             Ok(key)
         })
     }
@@ -735,6 +747,7 @@ impl Service {
         let l = layout(model, &t)?;
         let conditions = key_conditions(model, &t, &key)?;
         sql_update(model, session, &l.root, &sets, None, &conditions).await?;
+        self.record(session, &t, &key, ChangeKind::Updated).await?;
         Ok(())
     }
 
@@ -957,7 +970,8 @@ impl Service {
                 return Err(ODataError::new(412, "the entity was changed concurrently"));
             }
         }
-        Ok(())
+        self.record(session, type_name, key, ChangeKind::Updated)
+            .await
     }
 
     async fn replace_entity(
@@ -1196,7 +1210,288 @@ impl Service {
                     .await?;
             }
         }
+        for (nav_name, items) in &payload.deltas {
+            let nav = model
+                .navigation(concrete, nav_name)
+                .expect("checked by the parser");
+            self.apply_delta(req, session, &segs, type_name, nav, items)
+                .await?;
+        }
         Ok(())
+    }
+
+    /// The columns a row takes from its parent through `nav`.
+    async fn parent_columns(
+        &self,
+        req: &ODataRequest,
+        session: &Session,
+        parent: &[Segment],
+        parent_type: &str,
+        nav: &NavigationProperty,
+    ) -> Result<ParentColumns, ODataError> {
+        if nav.join_table.is_some() {
+            return Ok(Vec::new());
+        }
+        let columns: Vec<String> = nav.join.iter().map(|p| p.source.clone()).collect();
+        let values = self
+            .column_values(req, session, parent, parent_type, &columns)
+            .await?
+            .ok_or_else(|| ODataError::not_found("the entity does not exist"))?;
+        Ok(nav
+            .join
+            .iter()
+            .map(|p| p.target.clone())
+            .zip(values)
+            .collect())
+    }
+
+    /// The key an `@id` names. It must be of `declared` or a type derived from it.
+    fn key_of_url(
+        &self,
+        req: &ODataRequest,
+        url: &str,
+        declared: &str,
+    ) -> Result<EntityKey, ODataError> {
+        let model = &self.inner.model;
+        let (segs, t) = self.parse_entity_url(req, url)?;
+        if !model.type_chain(&t).iter().any(|b| b.name == declared) {
+            return Err(ODataError::bad_request(format!(
+                "{url} is not a {declared}"
+            )));
+        }
+        match segs.as_slice() {
+            [_, Segment::Key { values, .. }] | [Segment::Key { values, .. }] => model
+                .key_of(&t)
+                .iter()
+                .map(|k| {
+                    let found = values.iter().find(|(n, _)| n == k);
+                    found
+                        .cloned()
+                        .ok_or_else(|| ODataError::bad_request(format!("{url} does not name {k}")))
+                })
+                .collect(),
+            _ => Err(ODataError::bad_request(format!(
+                "{url} is not a canonical URL"
+            ))),
+        }
+    }
+
+    /// The entity of a delta entry, with the key its `@id` gives.
+    fn delta_entity(
+        &self,
+        req: &ODataRequest,
+        id: Option<&String>,
+        entity: &EntityPayload,
+        declared: &str,
+    ) -> Result<EntityPayload, ODataError> {
+        let model = &self.inner.model;
+        let mut entity = entity.clone();
+        let Some(url) = id else {
+            return Ok(entity);
+        };
+        for (name, value) in self.key_of_url(req, url, declared)? {
+            match entity.value(&name) {
+                Some(PropertyValue::Value(v))
+                    if same_key_value(model, declared, &name, v, &value) => {}
+                Some(_) => return Err(ODataError::bad_request("@id and the key disagree")),
+                None => entity.values.push((name, PropertyValue::Value(value))),
+            }
+        }
+        Ok(entity)
+    }
+
+    /// Applies `Nav@delta`. Members the payload doesn't name stay as they are, and removing an
+    /// entity that isn't a member does nothing: entries may arrive twice.
+    async fn apply_delta(
+        &self,
+        req: &ODataRequest,
+        session: &Session,
+        parent: &[Segment],
+        parent_type: &str,
+        nav: &NavigationProperty,
+        items: &[DeltaItem],
+    ) -> Result<(), ODataError> {
+        let model = &self.inner.model;
+        let mut current = self.related_keys(req, session, parent, nav).await?;
+        let direct = self
+            .parent_columns(req, session, parent, parent_type, nav)
+            .await?;
+        let member = |current: &[EntityKey], key: &EntityKey| {
+            current.iter().any(|k| key_text(k) == key_text(key))
+        };
+        for item in items {
+            match item {
+                DeltaItem::Entity { id, entity } => {
+                    let child = self.delta_entity(req, id.as_ref(), entity, &nav.target)?;
+                    let key = self
+                        .write_child(req, session, &child, direct.clone(), false)
+                        .await?;
+                    if !member(&current, &key) {
+                        if let Some(jt) = &nav.join_table {
+                            self.insert_link(
+                                req,
+                                session,
+                                parent,
+                                parent_type,
+                                jt,
+                                &child.type_name,
+                                &key,
+                            )
+                            .await?;
+                        }
+                        current.push(key);
+                    }
+                }
+                DeltaItem::Link(url) => {
+                    let key = self.key_of_url(req, url, &nav.target)?;
+                    if !member(&current, &key) {
+                        self.link_existing(req, session, parent, parent_type, nav, url)
+                            .await?;
+                        current.push(key);
+                    }
+                }
+                DeltaItem::Removed {
+                    id,
+                    entity,
+                    deleted,
+                } => {
+                    let named = self.delta_entity(req, id.as_ref(), entity, &nav.target)?;
+                    let key = child_key(model, &named, &direct).ok_or_else(|| {
+                        ODataError::bad_request("a removed entry needs an @id or a key")
+                    })?;
+                    if !member(&current, &key) {
+                        continue;
+                    }
+                    if *deleted {
+                        self.delete_listed(req, session, &nav.target, &key).await?;
+                    } else {
+                        self.remove_related(req, session, parent, parent_type, nav, &key)
+                            .await?;
+                    }
+                    current.retain(|k| key_text(k) != key_text(&key));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Deletes an entity a delta payload named.
+    async fn delete_listed(
+        &self,
+        req: &ODataRequest,
+        session: &Session,
+        type_name: &str,
+        key: &EntityKey,
+    ) -> Result<(), ODataError> {
+        crate::capabilities::check_write(&self.inner.model, type_name, &Method::DELETE)?;
+        self.inner
+            .changes
+            .before_delete(&self.change_context(req, session), type_name, key)
+            .await?;
+        self.delete_row(req, session, type_name, key).await
+    }
+
+    /// `PATCH` on a collection: a delta payload, applied as one change.
+    async fn patch_collection(
+        &self,
+        req: &ODataRequest,
+        uri: &ODataUri,
+        type_name: &str,
+        session: &Session,
+    ) -> Result<ODataResponse, ODataError> {
+        let model = &self.inner.model;
+        let format = Format::negotiate(uri.options.format.as_deref(), &req.headers)?;
+        let items = parse_delta(model, type_name, &req.body)?;
+        for item in &items {
+            check_delta_writable(model, &req.claims, item)?;
+        }
+        if let Some((Segment::Navigation { name, .. }, owner_path)) = uri.path.split_last() {
+            let owner = match owner_path.last().map(Segment::target) {
+                Some(Target::Entity(t)) => t.clone(),
+                _ => return Err(ODataError::bad_request("the parent needs a key")),
+            };
+            let nav = model
+                .navigation(&owner, name)
+                .ok_or_else(|| ODataError::new(500, format!("unknown navigation {name}")))?;
+            if !req.claims.sees(&nav.visible_for) {
+                return Err(ODataError::new(403, format!("{name} is not accessible")));
+            }
+            self.apply_delta(req, session, owner_path, &owner, nav, &items)
+                .await?;
+            return Ok(ODataResponse::new(StatusCode::NO_CONTENT));
+        }
+        if !matches!(uri.path.as_slice(), [Segment::EntitySet { .. }]) {
+            return Err(ODataError::new(405, "PATCH needs an entity set"));
+        }
+        let mut value = Vec::with_capacity(items.len());
+        let represent = prefer_return(req) == Return::Representation;
+        let set = set_of(model, type_name)
+            .ok_or_else(|| ODataError::new(500, format!("{type_name} has no entity set")))?;
+        for item in &items {
+            match item {
+                DeltaItem::Entity { id, entity } => {
+                    let child = self.delta_entity(req, id.as_ref(), entity, type_name)?;
+                    let key = self
+                        .write_child(req, session, &child, Vec::new(), false)
+                        .await?;
+                    if represent {
+                        let segs = [key_segment(&child.type_name, &key)];
+                        let rec = self
+                            .read_one(
+                                req,
+                                session,
+                                &segs,
+                                &child.type_name,
+                                &QueryOptions::default(),
+                            )
+                            .await?
+                            .ok_or_else(not_accessible)?;
+                        let w = crate::json::Writer {
+                            model,
+                            root: &req.root,
+                            format,
+                        };
+                        value.push(Json::Object(w.entity(&rec, type_name)));
+                    }
+                }
+                DeltaItem::Link(url) => {
+                    return Err(ODataError::bad_request(format!(
+                        "{url} has nothing to link to"
+                    )));
+                }
+                DeltaItem::Removed { id, entity, .. } => {
+                    let named = self.delta_entity(req, id.as_ref(), entity, type_name)?;
+                    let key = child_key(model, &named, &Vec::new()).ok_or_else(|| {
+                        ODataError::bad_request("a removed entry needs an @id or a key")
+                    })?;
+                    let segs = [key_segment(type_name, &key)];
+                    let columns = key_columns(model, type_name)?;
+                    let visible = self
+                        .column_values(req, session, &segs, type_name, &columns)
+                        .await?;
+                    if visible.is_some() {
+                        self.delete_listed(req, session, type_name, &key).await?;
+                    }
+                    if represent {
+                        value.push(self.removed_entry(req, set, &url_key_text(&key), "deleted"));
+                    }
+                }
+            }
+        }
+        if !represent {
+            return Ok(with_preference(
+                ODataResponse::new(StatusCode::NO_CONTENT),
+                Return::Minimal,
+            ));
+        }
+        let body = serde_json::json!({
+            "@odata.context": format!("{}/$metadata#{set}/$delta", req.root),
+            "value": value,
+        });
+        Ok(with_preference(
+            ODataResponse::json(StatusCode::OK, format.content_type(), &body),
+            Return::Representation,
+        ))
     }
 
     /// The keys of the entities currently related through `nav`, as the caller may see them.
@@ -1365,6 +1660,8 @@ impl Service {
             let l = layout(model, &child.type_name)?;
             let conditions = key_conditions(model, &child.type_name, &key)?;
             sql_update(model, session, &l.root, &moved, None, &conditions).await?;
+            self.record(session, &child.type_name, &key, ChangeKind::Updated)
+                .await?;
         }
         Ok(key)
     }
@@ -1420,20 +1717,9 @@ impl Service {
     ) -> Result<(), ODataError> {
         let model = &self.inner.model;
         let current = self.related_keys(req, session, parent, nav).await?;
-        let direct_columns: ParentColumns = if nav.join_table.is_some() {
-            Vec::new()
-        } else {
-            let columns: Vec<String> = nav.join.iter().map(|p| p.source.clone()).collect();
-            let values = self
-                .column_values(req, session, parent, parent_type, &columns)
-                .await?
-                .ok_or_else(|| ODataError::not_found("the entity does not exist"))?;
-            nav.join
-                .iter()
-                .map(|p| p.target.clone())
-                .zip(values)
-                .collect()
-        };
+        let direct_columns = self
+            .parent_columns(req, session, parent, parent_type, nav)
+            .await?;
         let mut kept = Vec::with_capacity(children.len());
         for child in children {
             let keyless = child_key(model, child, &direct_columns).is_none();
@@ -1536,7 +1822,7 @@ impl Service {
         let l = layout(model, target)?;
         let conditions = key_conditions(model, target, key)?;
         sql_update(model, session, &l.root, &sets, None, &conditions).await?;
-        Ok(())
+        self.record(session, target, key, ChangeKind::Updated).await
     }
 
     /// The response of an update: empty, unless a representation was asked for.
@@ -1768,6 +2054,7 @@ impl Service {
         if leaf.collection.is_some() {
             self.write_collection(req, session, &t, leaf, &key, &[], true)
                 .await?;
+            self.record(session, &t, &key, ChangeKind::Updated).await?;
             return Ok(ODataResponse::new(StatusCode::NO_CONTENT));
         }
         if !leaf.nullable {
@@ -1861,7 +2148,8 @@ impl Service {
         if n == 0 {
             return Err(ODataError::not_found("the entity does not exist"));
         }
-        Ok(())
+        self.record(session, type_name, key, ChangeKind::Deleted)
+            .await
     }
 
     /// The owner and navigation of a `.../Nav/$ref` path.
@@ -2132,7 +2420,7 @@ fn not_accessible() -> ODataError {
 
 /// Whether rows of a type can be hidden from the caller. Such types never upsert: a hidden row
 /// looks missing, so answering differently for it and for a free key would reveal that it exists.
-fn row_restricted(model: &Model, type_name: &str) -> bool {
+pub(crate) fn row_restricted(model: &Model, type_name: &str) -> bool {
     model
         .type_chain(type_name)
         .iter()
@@ -2168,7 +2456,29 @@ fn check_writable(
             check_writable(model, claims, child)?;
         }
     }
+    for (name, items) in &payload.deltas {
+        let nav = model.navigation(&payload.type_name, name);
+        if nav.is_some_and(|n| !claims.sees(&n.visible_for)) {
+            return Err(ODataError::new(403, format!("{name} is not accessible")));
+        }
+        for item in items {
+            check_delta_writable(model, claims, item)?;
+        }
+    }
     Ok(())
+}
+
+fn check_delta_writable(
+    model: &Model,
+    claims: &odatabase_sql::Claims,
+    item: &DeltaItem,
+) -> Result<(), ODataError> {
+    match item {
+        DeltaItem::Entity { entity, .. } | DeltaItem::Removed { entity, .. } => {
+            check_writable(model, claims, entity)
+        }
+        DeltaItem::Link(_) => Ok(()),
+    }
 }
 
 /// Columns that a parent, a link or a nested entity will supply.

@@ -1,5 +1,6 @@
 //! `GET` requests.
 
+use crate::delta::{DeltaToken, prefers_tracking, trackable};
 use crate::format::{Format, metadata_as_json};
 use crate::json::{Writer, etag_header};
 use crate::paging::PageRequest;
@@ -15,7 +16,7 @@ use odatabase_uri::{ODataUri, QueryOptions, Segment, SelectItem, Target};
 use serde_json::{Map, Value as Json, json};
 
 /// The value of `Prefer: odata.maxpagesize`.
-fn max_page_size(req: &ODataRequest) -> Option<u64> {
+pub(crate) fn max_page_size(req: &ODataRequest) -> Option<u64> {
     req.headers
         .get_all("prefer")
         .iter()
@@ -95,6 +96,10 @@ impl Service {
         session: &Session,
     ) -> Result<ODataResponse, ODataError> {
         self.check_selected_visibility(req, uri)?;
+        if uri.options.deltatoken.is_some() && !matches!(uri.target(), Target::EntityCollection(_))
+        {
+            return Err(ODataError::bad_request("$deltatoken needs an entity set"));
+        }
         if let Some(t) = capability_type(uri) {
             crate::capabilities::check_read(&self.inner.model, t, uri)?;
         }
@@ -251,6 +256,28 @@ impl Service {
         let format = Format::negotiate(o.format.as_deref(), &req.headers)?;
         let language = language(req, &self.inner.config.default_language);
         let ctx = self.query_context(req, &language, session);
+        let model = &self.inner.model;
+        let token = o.deltatoken.as_deref().map(DeltaToken::parse).transpose()?;
+        if token.is_some() && !trackable(model, uri, type_name) {
+            return Err(ODataError::bad_request("this query has no delta link"));
+        }
+        // Taken before the read, so that a change racing it is in the first delta.
+        let tracked_from = match token {
+            Some(DeltaToken::Changes {
+                since,
+                until,
+                after,
+            }) => {
+                return self
+                    .delta_page(req, uri, type_name, session, format, (since, until, after))
+                    .await;
+            }
+            Some(DeltaToken::FirstRead { from }) => Some(from),
+            None if prefers_tracking(req) && trackable(model, uri, type_name) => {
+                Some(odatabase_sql::change_position(session).await?)
+            }
+            None => None,
+        };
         let page = self.inner.paging.page(&PageRequest {
             entity_type: type_name,
             top: o.top,
@@ -307,13 +334,15 @@ impl Service {
             .collect();
         body.insert("value".into(), items.into());
         if has_more && let Some(next) = &page.next {
-            let link = format!(
-                "{}/{}?{}",
-                req.root,
-                req.path.trim_matches('/'),
-                next_query(&req.query, next)
-            );
+            let query = match tracked_from {
+                Some(from) => Self::first_read_link(&req.query, from, next),
+                None => next_query(&req.query, next),
+            };
+            let link = format!("{}/{}?{}", req.root, req.path.trim_matches('/'), query);
             body.insert("@odata.nextLink".into(), link.into());
+        }
+        if let Some(from) = tracked_from {
+            Self::finish_tracked(req, from, !has_more, &mut body);
         }
         let mut r = ODataResponse::json(StatusCode::OK, format.content_type(), &Json::Object(body));
         if page.applied_max_page_size
@@ -321,6 +350,9 @@ impl Service {
             && let Ok(v) = HeaderValue::try_from(format!("odata.maxpagesize={n}"))
         {
             r.headers.insert("preference-applied", v);
+        }
+        if tracked_from.is_some() {
+            Self::tracked_response(&mut r);
         }
         Ok(r)
     }

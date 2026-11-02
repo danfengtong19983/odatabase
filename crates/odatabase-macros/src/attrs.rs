@@ -101,6 +101,7 @@ pub struct TypeAttrs {
     pub visible_for: Vec<String>,
     pub annotations: Vec<TokenStream>,
     pub query_extension: bool,
+    pub track_changes: bool,
 }
 
 impl TypeAttrs {
@@ -120,6 +121,8 @@ impl TypeAttrs {
                     t.hidden_set = true;
                 } else if m.path.is_ident("singleton") {
                     t.singleton = Some(string(&m)?);
+                } else if m.path.is_ident("track_changes") {
+                    t.track_changes = true;
                 } else if m.path.is_ident("abstract_type") {
                     t.is_abstract = true;
                 } else if m.path.is_ident("base") {
