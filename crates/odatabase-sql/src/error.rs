@@ -62,6 +62,8 @@ fn database_status(e: &sqlx::Error) -> (u16, String) {
             "23502" | "1299" => return (400, "a required property is missing".into()),
             "22012" => return (400, "division by zero".into()),
             "57014" => return (503, "the query took too long".into()),
+            // SQLite writers collided: busy, locked, and a stale read snapshot.
+            "5" | "6" | "517" | "261" => return (503, "the service is busy".into()),
             "22P02" | "22003" | "22007" | "22008" => {
                 return (400, "a value is out of range for its type".into());
             }

@@ -542,7 +542,7 @@ impl Service {
                     let Some(child) = children.first() else {
                         continue;
                     };
-                    let key = self.insert_entity(req, session, child, Vec::new()).await?;
+                    let key = self.insert_child(req, session, child, Vec::new()).await?;
                     let segs = [key_segment(&child.type_name, &key)];
                     let cols: Vec<String> = nav.join.iter().map(|p| p.target.clone()).collect();
                     let values = self
@@ -641,7 +641,7 @@ impl Service {
                 }
                 for child in children {
                     if let Some(jt) = &nav.join_table {
-                        let child_key = self.insert_entity(req, session, child, Vec::new()).await?;
+                        let child_key = self.insert_child(req, session, child, Vec::new()).await?;
                         self.insert_link(
                             req,
                             session,
@@ -664,7 +664,7 @@ impl Service {
                             .map(|p| p.target.clone())
                             .zip(values)
                             .collect();
-                        self.insert_entity(req, session, child, parent).await?;
+                        self.insert_child(req, session, child, parent).await?;
                     }
                 }
             }
@@ -718,6 +718,8 @@ impl Service {
                 .insert_link(req, session, source, source_type, jt, &t, &target_key)
                 .await;
         }
+        // Linking writes the foreign key on the target row.
+        crate::capabilities::check_write(model, &t, &Method::PATCH)?;
         let cols: Vec<String> = nav.join.iter().map(|p| p.source.clone()).collect();
         let values = self
             .column_values(req, session, source, source_type, &cols)

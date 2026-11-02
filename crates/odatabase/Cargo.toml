@@ -24,6 +24,7 @@ odatabase-uri.workspace = true
 async-trait.workspace = true
 axum.workspace = true
 chrono.workspace = true
+futures.workspace = true
 http-body-util.workspace = true
 insta.workspace = true
 rust_decimal.workspace = true
