@@ -269,6 +269,7 @@ pub fn entity(input: &DeriveInput) -> Result<TokenStream> {
         None => quote!(None),
     };
     let visible = &attrs.visible_for;
+    let track_changes = attrs.track_changes;
     let annotations = &attrs.annotations;
     let query_extension = attrs.query_extension;
     let contained = attrs.no_set || attrs.singleton.is_some() || is_abstract || has_base;
@@ -318,6 +319,7 @@ pub fn entity(input: &DeriveInput) -> Result<TokenStream> {
                     visible_for: vec![#(#visible.to_owned()),*],
                     annotations: vec![#(#annotations),*],
                     query_extension: #query_extension,
+                    track_changes: #track_changes,
                     ..Default::default()
                 };
                 #(#body)*

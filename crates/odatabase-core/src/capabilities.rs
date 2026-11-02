@@ -75,33 +75,51 @@ fn property_path(p: &Path) -> Option<String> {
 }
 
 /// Calls `visit` on every path in `e`.
-fn each_path(e: &Expr, visit: &mut dyn FnMut(&Path)) {
+fn each_expr(e: &Expr, visit: &mut dyn FnMut(&Expr)) {
+    visit(e);
     match e {
-        Expr::Literal(_) | Expr::Computed(..) => {}
-        Expr::Path(p) => visit(p),
-        Expr::Not(x) | Expr::Negate(x) | Expr::Cast(x, _) => each_path(x, visit),
+        Expr::Literal(_) | Expr::Computed(..) | Expr::Path(_) => {}
+        Expr::Not(x) | Expr::Negate(x) | Expr::Cast(x, _) => each_expr(x, visit),
         Expr::Binary(_, l, r) => {
-            each_path(l, visit);
-            each_path(r, visit);
+            each_expr(l, visit);
+            each_expr(r, visit);
         }
         Expr::In(l, items) => {
-            each_path(l, visit);
-            items.iter().for_each(|i| each_path(i, visit));
+            each_expr(l, visit);
+            items.iter().for_each(|i| each_expr(i, visit));
         }
-        Expr::Call(_, args) => args.iter().for_each(|a| each_path(a, visit)),
-        Expr::Lambda { source, body, .. } => {
-            visit(source);
+        Expr::Call(_, args) => args.iter().for_each(|a| each_expr(a, visit)),
+        Expr::Lambda { body, .. } => {
             if let Some(b) = body {
-                each_path(b, visit);
+                each_expr(b, visit);
             }
         }
         Expr::IsOf(x, _) => {
             if let Some(x) = x {
-                each_path(x, visit);
+                each_expr(x, visit);
             }
         }
-        Expr::Function { args, .. } => args.iter().for_each(|(_, a)| each_path(a, visit)),
+        Expr::Function { args, .. } => args.iter().for_each(|(_, a)| each_expr(a, visit)),
     }
+}
+
+fn each_path(e: &Expr, visit: &mut dyn FnMut(&Path)) {
+    each_expr(e, &mut |x| match x {
+        Expr::Path(p) => visit(p),
+        Expr::Lambda { source, .. } => visit(source),
+        _ => {}
+    });
+}
+
+/// Whether a filter depends on nothing but the row itself, so that only a change to that row
+/// can change its result.
+pub fn stays_on_row(e: &Expr) -> bool {
+    let mut own = true;
+    each_expr(e, &mut |x| own &= !matches!(x, Expr::Function { .. }));
+    each_path(e, &mut |p| {
+        own &= !p.steps.iter().any(|s| matches!(s, Step::Navigation(_)));
+    });
+    own
 }
 
 fn pipeline_filters<'o>(steps: &'o [Transformation], out: &mut Vec<&'o Expr>) {

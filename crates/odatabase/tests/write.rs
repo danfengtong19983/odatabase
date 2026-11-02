@@ -918,11 +918,11 @@ async fn deep_update_is_atomic(app: App) {
     let r = patch(&app, "BusinessPartners('2')", current).await;
     assert_eq!(r.status, StatusCode::NO_CONTENT, "{}", r.text());
 
-    let r = patch(&app, "BusinessPartners('1')", json!({"Roles@delta": []})).await;
+    let r = patch(&app, "BusinessPartners('1')", json!({"Owner@delta": []})).await;
     assert_eq!(
         r.status,
-        StatusCode::NOT_IMPLEMENTED,
-        "not silently ignored"
+        StatusCode::BAD_REQUEST,
+        "only collections take a delta"
     );
     let r = patch(&app, "BusinessPartners('1')", json!({"Roles": {"Code": 1}})).await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);

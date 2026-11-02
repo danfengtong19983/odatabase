@@ -5,7 +5,24 @@ mod common;
 
 use async_trait::async_trait;
 use odatabase::edm::Value;
-use odatabase::{ODataError, OffsetPaging, OperationContext, OperationHandler, OperationResult};
+use odatabase::{
+    Database, ODataEntity, ODataError, OffsetPaging, OperationContext, OperationHandler,
+    OperationResult,
+};
+
+/// The entity clients track changes on.
+#[derive(ODataEntity)]
+#[odata(table = "note", track_changes)]
+pub struct Note {
+    #[odata(key)]
+    pub id: i32,
+    pub title: String,
+}
+
+const NOTES: &str = "
+CREATE TABLE note (id INTEGER PRIMARY KEY, title TEXT NOT NULL);
+INSERT INTO note (id, title) VALUES (2, 'second'), (3, 'third');
+";
 
 struct Add;
 
@@ -20,8 +37,11 @@ impl OperationHandler for Add {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let pool = common::sqlite_pool(common::SCHEMA).await;
+    let pool = common::sqlite_pool(&format!("{}{NOTES}", common::SCHEMA)).await;
+    let database = Database::from(pool);
+    database.create_change_log().await?;
     let service = common::builder()
+        .entity::<Note>()
         .paging(OffsetPaging {
             page_size: Some(100),
         })
@@ -37,7 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .returns::<i32>()
                 .handler(Add)
         })
-        .build(pool)?;
+        .build(database)?;
     let app = odatabase::mount("/odata", service);
     let address = std::env::var("ODATA_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".to_owned());
     let listener = tokio::net::TcpListener::bind(&address).await?;

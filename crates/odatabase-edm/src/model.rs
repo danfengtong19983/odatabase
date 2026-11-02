@@ -131,6 +131,8 @@ pub struct EntityType {
     pub annotations: Vec<Annotation>,
     /// Filter restricting every read, registered with a query extension provider.
     pub query_extension: bool,
+    /// Changes go to the change log, so that reads can offer delta links.
+    pub track_changes: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

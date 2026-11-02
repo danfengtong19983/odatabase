@@ -79,6 +79,10 @@ impl Service {
         &self.inner.model
     }
 
+    pub fn database(&self) -> &Database {
+        &self.inner.database
+    }
+
     /// Answers one request. Failures become OData error responses.
     pub async fn handle(&self, req: ODataRequest) -> ODataResponse {
         let outcome = match self.inner.config.request_timeout {
@@ -240,7 +244,36 @@ impl ServiceBuilder {
                 set.annotations.push(supported.clone());
             }
         }
+        let tracking = Annotation::new(
+            "Capabilities.ChangeTracking",
+            AnnotationValue::Record(vec![("Supported".to_owned(), AnnotationValue::Bool(true))]),
+        );
+        let tracked_sets: Vec<String> = model
+            .entity_sets
+            .values()
+            .filter(|s| crate::delta::tracked(&model, &s.entity_type))
+            .map(|s| s.name.clone())
+            .collect();
+        for set in tracked_sets {
+            if let Some(s) = model.entity_sets.get_mut(&set) {
+                s.annotations.push(tracking.clone());
+            }
+        }
         for t in model.entity_types.values() {
+            if crate::delta::tracked(&model, &t.name) {
+                if crate::url::set_of(&model, &t.name).is_none() {
+                    return Err(ModelError(format!(
+                        "{}: tracking changes needs an entity set",
+                        t.name
+                    )));
+                }
+                if crate::write::row_restricted(&model, &t.name) {
+                    return Err(ModelError(format!(
+                        "{}: rows hidden from some callers cannot be tracked",
+                        t.name
+                    )));
+                }
+            }
             if t.query_extension && !self.extensions.contains_key(&t.name) {
                 return Err(ModelError(format!(
                     "{}: no query extension registered",

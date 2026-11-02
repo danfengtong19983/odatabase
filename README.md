@@ -59,6 +59,7 @@ upper camel case (`FirstName`). Set `name` or `column` to override either.
 | `$apply` | `aggregate`, `groupby` (with `rollup` and `$all`), `filter`, `search`, `compute`, `orderby`, `top`, `skip`, `identity`, `concat`, `join`, `outerjoin`, `expand`, and the `topcount`, `topsum`, `toppercent` family with its `bottom` forms, in pipelines, with `sum`, `min`, `max`, `average`, `countdistinct` and `$count` |
 | `$expand` | Nested options, per-parent `$top` and `$skip`, `$levels`, `/$count`, `/$ref`, `*`, join tables |
 | Writes | POST, PATCH, PUT, DELETE, upsert, property and `$value` updates, deep insert, deep update, `@odata.bind`, `$ref` links, ETag preconditions, `Prefer: return` |
+| Delta | `Prefer: odata.track-changes`, `@odata.deltaLink`, removed entries, `Nav@delta`, `PATCH` on a collection |
 | `$batch` | Multipart and JSON formats, atomic change sets, `Content-ID` references, `continue-on-error` |
 | Operations | Bound and unbound functions and actions, overloads, application handlers, database functions, composable table functions (Postgres) |
 | Security | Row protection from claims (values, ranges, wildcards), group visibility of types, properties, navigations and operations, query extensions |
@@ -111,6 +112,69 @@ SQLite is well suited to tests and small services, with these limits:
 - `$search` is substring matching rather than text search.
 - `matchesPattern` and table functions return 501.
 
+### Change tracking
+
+Mark an entity with `#[odata(track_changes)]` and create the log once at startup:
+
+```rust
+database.create_change_log().await?;
+```
+
+A read with `Prefer: odata.track-changes` then ends in an `@odata.deltaLink`. Following it returns
+the entities that changed since, in their current state, and an entry with `reason` `deleted` or
+`changed` for those that left the result. Each page or final response carries the next link.
+
+- **What is logged.** Writes through the service, in their own transaction, so a failed request
+  leaves no trace. An action handler or another program that writes directly must add its own row
+  to `odata_changes` (`entity_set`, `entity_key`, `kind`), which a trigger can do:
+
+  ```sql
+  CREATE FUNCTION log_task() RETURNS trigger AS $$
+  BEGIN
+    INSERT INTO odata_changes (entity_set, entity_key, kind)
+    VALUES (
+      'Tasks',
+      format('(%L)', CASE TG_OP WHEN 'DELETE' THEN OLD.id ELSE NEW.id END),
+      CASE TG_OP WHEN 'INSERT' THEN 'C' ELSE left(TG_OP, 1) END
+    );
+    RETURN NULL;
+  END $$ LANGUAGE plpgsql;
+  CREATE TRIGGER log_task AFTER INSERT OR UPDATE OR DELETE ON task
+    FOR EACH ROW EXECUTE FUNCTION log_task();
+  ```
+
+  A change seen by both the trigger and the service gets two rows, which is harmless: a client
+  gets one entry.
+- **Which reads get a link.** An entity set read with `$filter`, `$select`, `$orderby` or `$search`.
+  `$top`, `$skip`, `$expand`, `$apply`, navigation paths, and filters on related entities or
+  composable functions get a normal response: the preference is ignored, as the protocol allows.
+  Links between entities aren't reported, only changes to the entities themselves.
+- **Hidden rows.** A type with row protection or a query extension can't be tracked, and `build`
+  says so: a removal entry would reveal the key of a row the caller can't see.
+- **Retention.** Call `database.prune_change_log(age)` on a schedule. A link older than that gets
+  a 410, and the client reads everything again.
+- **Order on Postgres.** A position is the oldest transaction still running at the read, so a slow
+  transaction can't commit behind a client's back. A long transaction can resend some rows.
+
+### Delta payloads
+
+`PATCH` accepts changes to part of a collection, applied as one transaction:
+
+```json
+{"Labels@delta": [
+  {"Code": 3, "Body": "created or updated"},
+  {"@id": "People(3)"},
+  {"@removed": {"reason": "changed"}, "@id": "People(1)"},
+  {"@removed": {"reason": "deleted"}, "Code": 1}
+]}
+```
+
+Members the payload doesn't name stay as they are. `changed` ends the relationship, and deletes the
+row only if it can't exist without its parent. `deleted` deletes the row. Removing an entity that
+isn't a member does nothing, since a delta may arrive twice. The OData 4.0 form with
+`$deletedEntity` works too. `PATCH` on `Set` or `Set(key)/Nav` takes the same entries in
+`{"value": [...]}`, and answers 204, or the applied changes with `Prefer: return=representation`.
+
 ### Not implemented
 
 These return a status rather than a wrong result:
@@ -122,11 +186,11 @@ These return a status rather than a wrong result:
 | `join` with no later aggregation, and `expand` before an aggregation or inside `concat` | 501 |
 | `$expand` or `$search` after an aggregation, and anything but `filter` and `search` in `$apply` inside `$expand` | 501 |
 | Date and duration arithmetic, `maxdatetime`, `mindatetime`, `geo.*`, `hassubset` in `$filter` | 501 |
-| Delta payloads (`Nav@delta`) | 501 |
 | Navigation properties inside complex types | 501 |
 | Entity-typed operation parameters | 501 |
 | Query options on the result of a handler-based operation, other than `$select` and `$expand` | 501 |
 | Data formats other than JSON | 406 |
+| `$link` and `$deletedLink` entries in delta payloads, `/$count` of a delta link | 400 |
 
 `groupby` keys and aggregated values can follow to-one navigation only: a to-many path is a 400.
 Each entity set announces its transformations through `Aggregation.ApplySupported`. A `concat` arm
