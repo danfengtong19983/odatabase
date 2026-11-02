@@ -102,12 +102,50 @@ impl Service {
         &self,
         req: &ODataRequest,
     ) -> Result<odatabase_uri::ODataUri, ODataError> {
-        Ok(odatabase_uri::parse_with(
+        let path = req.path.trim_matches('/');
+        let entity = path
+            .strip_prefix("$entity")
+            .or(path.strip_prefix("%24entity"));
+        let cast = match entity {
+            Some("") => Some(""),
+            Some(rest) => rest.strip_prefix('/'),
+            None => None,
+        };
+        let Some(cast) = cast else {
+            return Ok(odatabase_uri::parse_with(
+                &self.inner.model,
+                &req.path,
+                &req.query,
+                self.inner.config.uri_limits,
+            )?);
+        };
+        // `$entity?$id=url` is a read of that URL, with the rest of the query applied to it.
+        if req.method != Method::GET {
+            return Err(ODataError::new(405, "$entity can only be read"));
+        }
+        let (id, query) = odatabase_uri::take_entity_id(&req.query)?;
+        let id = id.ok_or_else(|| ODataError::bad_request("$entity needs $id"))?;
+        let relative = id.strip_prefix(&req.root).unwrap_or(&id);
+        if relative.contains("://") || relative.contains('?') {
+            return Err(ODataError::bad_request(format!(
+                "{id} is not an entity of this service"
+            )));
+        }
+        let relative = relative.trim_matches('/');
+        let target = match cast {
+            "" => relative.to_owned(),
+            cast => format!("{relative}/{cast}"),
+        };
+        let uri = odatabase_uri::parse_with(
             &self.inner.model,
-            &req.path,
-            &req.query,
+            &target,
+            &query,
             self.inner.config.uri_limits,
-        )?)
+        )?;
+        if !matches!(uri.target(), odatabase_uri::Target::Entity(_)) {
+            return Err(ODataError::bad_request(format!("{id} is not an entity")));
+        }
+        Ok(uri)
     }
 
     async fn dispatch(&self, req: &ODataRequest) -> Result<ODataResponse, ODataError> {

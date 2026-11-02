@@ -55,7 +55,7 @@ upper camel case (`FirstName`). Set `name` or `column` to override either.
 | Metadata | CSDL XML and JSON, service document, `$metadata` ETag, annotations and vocabularies |
 | Model | Complex types, enums and flags, collection properties, singletons, single-table and joined inheritance, media streams, geospatial properties (stored as GeoJSON) |
 | Mapped properties | Language-dependent descriptions, transient properties with calculators |
-| Reads | Key and navigation paths, `$filter` with lambdas and built-in functions, `$select`, `$orderby`, `$top`, `$skip`, `$count`, `$search`, `$ref`, `$value`, casts |
+| Reads | Key and navigation paths, `$filter` with lambdas and built-in functions, `$select`, `$orderby`, `$top`, `$skip`, `$count`, `$search`, `$compute`, `$ref`, `$value`, `$entity`, casts, date and duration arithmetic |
 | `$apply` | `aggregate`, `groupby` (with `rollup` and `$all`), `filter`, `search`, `compute`, `orderby`, `top`, `skip`, `identity`, `concat`, `join`, `outerjoin`, `expand`, and the `topcount`, `topsum`, `toppercent` family with its `bottom` forms, in pipelines, with `sum`, `min`, `max`, `average`, `countdistinct` and `$count` |
 | `$expand` | Nested options, per-parent `$top` and `$skip`, `$levels`, `/$count`, `/$ref`, `*`, join tables |
 | Writes | POST, PATCH, PUT, DELETE, upsert, property and `$value` updates, deep insert, deep update, `@odata.bind`, `$ref` links, ETag preconditions, `Prefer: return` |
@@ -110,6 +110,7 @@ SQLite is well suited to tests and small services, with these limits:
 
 - `Edm.Decimal` values are stored as doubles, so they lose precision beyond about 15 digits.
 - `$search` is substring matching rather than text search.
+- Date arithmetic is exact to the millisecond, not the microsecond.
 - `matchesPattern` and table functions return 501.
 
 ### Change tracking
@@ -181,11 +182,11 @@ These return a status rather than a wrong result:
 
 | Feature | Response |
 |---|---|
-| `$compute`, `$all`, `$crossjoin`, `$entity`, async requests | 501 |
+| `$all`, `$crossjoin`, async requests, `$compute` inside `$expand` | 501 |
 | In `$apply`: `nest`, `ancestors`, `descendants`, `traverse`, custom aggregates, `from` with more than one level, `join` on anything but navigation | 501 |
 | `join` with no later aggregation, and `expand` before an aggregation or inside `concat` | 501 |
 | `$expand` or `$search` after an aggregation, and anything but `filter` and `search` in `$apply` inside `$expand` | 501 |
-| Date and duration arithmetic, `maxdatetime`, `mindatetime`, `geo.*`, `hassubset` in `$filter` | 501 |
+| `geo.*` and `hassubset` in `$filter` | 501 |
 | Navigation properties inside complex types | 501 |
 | Entity-typed operation parameters | 501 |
 | Query options on the result of a handler-based operation, other than `$select` and `$expand` | 501 |

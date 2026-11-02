@@ -385,7 +385,10 @@ impl Service {
             return format!("{}/$metadata#{}{}", req.root, s.name, select_list(o));
         }
         match set_path(m, t) {
-            Some(set) => format!("{}/$metadata#{set}{}/$entity", req.root, select_list(o)),
+            Some(set) => {
+                let list = computed_list(o).unwrap_or_else(|| select_list(o));
+                format!("{}/$metadata#{set}{list}/$entity", req.root)
+            }
             None => format!("{}/$metadata#{}", req.root, m.qualified(t)),
         }
     }

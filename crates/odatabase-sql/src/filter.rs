@@ -7,7 +7,9 @@ use odatabase_edm::{
     ColumnPair, EntityType, Inheritance, NavigationProperty, PrimitiveKind, Property, TypeKind,
     Value,
 };
-use odatabase_uri::{BinaryOp, Expr as UExpr, ExprType, Func, LambdaKind, Path, PathRoot, Step};
+use odatabase_uri::{
+    BinaryOp, Expr as UExpr, ExprType, Func, LambdaKind, Path, PathRoot, Step, is_temporal,
+};
 use sea_query::{Alias, Asterisk, Expr, ExprTrait, Query, SelectStatement, SubQueryStatement};
 
 /// A table instance in a query, and the type its columns are read as.
@@ -1111,8 +1113,8 @@ impl<'a> Translator<'a> {
                     _ => a.lte(b),
                 })
             }
-            B::Add | B::Sub if is_temporal(&l.ty()) || is_temporal(&r.ty()) => {
-                Err(QueryError::not_implemented("date arithmetic"))
+            B::Add | B::Sub | B::Mul | B::Div if is_temporal(&l.ty()) || is_temporal(&r.ty()) => {
+                self.temporal_arithmetic(it, op, l, r)
             }
             B::Add => Ok(self.expr(it, l)?.add(self.expr(it, r)?)),
             B::Sub => Ok(self.expr(it, l)?.sub(self.expr(it, r)?)),
@@ -1152,6 +1154,69 @@ impl<'a> Translator<'a> {
     }
 
     /// Both operands, adjusted so that SQLite compares timestamps as instants.
+    /// Date and duration arithmetic. Durations are stored as microseconds.
+    fn temporal_arithmetic(
+        &mut self,
+        it: &Frame,
+        op: BinaryOp,
+        l: &UExpr,
+        r: &UExpr,
+    ) -> Result<Expr, QueryError> {
+        use PrimitiveKind as P;
+        let (lt, rt) = (l.ty(), r.ty());
+        if lt == ExprType::Null || rt == ExprType::Null {
+            return Ok(Expr::cust("NULL"));
+        }
+        let d = self.dialect();
+        let pg = d == Dialect::Postgres;
+        let (a, b) = (self.expr(it, l)?, self.expr(it, r)?);
+        let sign = if op == BinaryOp::Add { "+" } else { "-" };
+        let interval = "CAST($2 AS double precision) * interval '1 microsecond'";
+        let seconds = format!("printf('%+.6f seconds', {sign}$2 / 1000000.0)");
+        let kinds = (&lt, &rt);
+        let timestamp = ExprType::Primitive(P::DateTimeOffset);
+        let date = ExprType::Primitive(P::Date);
+        Ok(match op {
+            BinaryOp::Mul if pg => {
+                tpl(d, "CAST(round(CAST($1 * $2 AS numeric)) AS bigint)", [a, b])
+            }
+            BinaryOp::Mul => tpl(d, "CAST(round($1 * $2) AS INTEGER)", [a, b]),
+            BinaryOp::Div if pg => {
+                tpl(d, "CAST(round(CAST($1 AS numeric) / $2) AS bigint)", [a, b])
+            }
+            BinaryOp::Div => tpl(d, "CAST(round($1 * 1.0 / $2) AS INTEGER)", [a, b]),
+            _ if kinds == (&timestamp, &timestamp) && pg => tpl(
+                d,
+                "CAST(round(EXTRACT(EPOCH FROM ($1 - $2)) * 1000000) AS bigint)",
+                [a, b],
+            ),
+            // julianday holds milliseconds exactly, but not what its double spells out below them.
+            _ if kinds == (&timestamp, &timestamp) => tpl(
+                d,
+                "(CAST(round((julianday($1) - julianday($2)) * 86400000.0) AS INTEGER) * 1000)",
+                [a, b],
+            ),
+            _ if kinds == (&date, &date) && pg => {
+                tpl(d, "(CAST($1 - $2 AS bigint) * 86400000000)", [a, b])
+            }
+            _ if kinds == (&date, &date) => tpl(
+                d,
+                "(CAST(round(julianday($1) - julianday($2)) AS INTEGER) * 86400000000)",
+                [a, b],
+            ),
+            _ if lt == timestamp && pg => tpl(d, format!("($1 {sign} {interval})"), [a, b]),
+            _ if lt == timestamp => tpl(
+                d,
+                format!("strftime('%Y-%m-%dT%H:%M:%fZ', $1, {seconds})"),
+                [a, b],
+            ),
+            _ if lt == date && pg => tpl(d, format!("CAST($1 {sign} {interval} AS date)"), [a, b]),
+            _ if lt == date => tpl(d, format!("date($1, {seconds})"), [a, b]),
+            BinaryOp::Add => a.add(b),
+            _ => a.sub(b),
+        })
+    }
+
     fn comparable(&mut self, it: &Frame, l: &UExpr, r: &UExpr) -> Result<(Expr, Expr), QueryError> {
         let (a, b) = (self.expr(it, l)?, self.expr(it, r)?);
         Ok(self.temporal(&l.ty(), &r.ty(), a, b))
@@ -1330,7 +1395,13 @@ impl<'a> Translator<'a> {
             Func::Now if pg => Expr::cust("now()"),
             Func::Now => Expr::cust("strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"),
             Func::MaxDateTime | Func::MinDateTime => {
-                return Err(QueryError::not_implemented("maxdatetime and mindatetime"));
+                let text = match f {
+                    Func::MaxDateTime => "9999-12-31T23:59:59.999Z",
+                    _ => "0001-01-01T00:00:00Z",
+                };
+                let bound = chrono::DateTime::parse_from_rfc3339(text)
+                    .map_err(|_| QueryError::internal("an invalid date limit"))?;
+                self.literal(&Value::DateTimeOffset(bound))?
             }
             // numeric rounds halves away from zero as OData requires, double to even.
             Func::Round if pg => one("round(CAST($1 AS numeric))", a),
@@ -1430,13 +1501,4 @@ impl<'a> Translator<'a> {
 
 fn is_value_literal(e: &UExpr) -> bool {
     matches!(e, UExpr::Literal(v) if !v.is_null())
-}
-
-fn is_temporal(t: &ExprType) -> bool {
-    matches!(
-        t,
-        ExprType::Primitive(
-            PrimitiveKind::Date | PrimitiveKind::DateTimeOffset | PrimitiveKind::Duration
-        )
-    )
 }

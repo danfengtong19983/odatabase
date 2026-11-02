@@ -273,6 +273,19 @@ public class Main {
       expect(e.getNavigationLink("Roles") != null, "no navigation link");
       return e.getEditLink().toString();
     });
+    check("$entity", () -> {
+      URI uri = URI.create(ROOT + "/$entity?$id=BusinessPartners('1')".replace("'", "%27"));
+      ClientEntity e = client.getRetrieveRequestFactory().getEntityRequest(uri).execute().getBody();
+      return e.getProperty("Name").getValue().toString();
+    });
+    check("$compute and date arithmetic through the URI builder", () -> {
+      var uri = set("BusinessPartners")
+          .addCustomQueryOption("$compute", "CreatedAt add duration'P1D' as Tomorrow")
+          .filter("Tomorrow gt 2024-06-02T11:00:00Z").build();
+      var rows = client.getRetrieveRequestFactory().getEntitySetRequest(uri).execute().getBody();
+      expect(rows.getEntities().size() == 1, rows.getEntities().size() + " rows");
+      return rows.getEntities().get(0).getProperty("Name").getValue().toString();
+    });
     check("change tracking", () -> {
       var first = client.getRetrieveRequestFactory().getEntitySetRequest(set("Notes").build());
       first.setPrefer(client.newPreferences().trackChanges());

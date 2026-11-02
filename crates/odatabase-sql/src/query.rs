@@ -700,6 +700,14 @@ fn build_read(
             .iter()
             .filter_map(computed_items)
             .flatten()
+            .filter(|item| {
+                req.options.select.as_ref().is_none_or(|list| {
+                    list.iter().any(|s| match s {
+                        SelectItem::Star => true,
+                        SelectItem::Path(p) => p.as_slice() == [item.alias.clone()],
+                    })
+                })
+            })
         {
             let alias = UExpr::Computed(item.alias.clone(), item.ty.clone());
             let e = es.tr.expr(&frame, &alias)?;
