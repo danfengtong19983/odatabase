@@ -9,6 +9,7 @@ use odatabase_sql::{Database, ExpandLimits, QueryExtension};
 use odatabase_uri::Limits;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Service-wide settings.
 #[derive(Clone, Debug)]
@@ -17,6 +18,9 @@ pub struct Config {
     pub expand_limits: ExpandLimits,
     /// Language of description properties when the request names none.
     pub default_language: String,
+    /// Time to answer a request. It frees the request, but a statement already running keeps
+    /// going in the database: see `PostgresOptions::statement_timeout`.
+    pub request_timeout: Option<Duration>,
 }
 
 impl Default for Config {
@@ -25,6 +29,7 @@ impl Default for Config {
             uri_limits: Limits::default(),
             expand_limits: ExpandLimits::default(),
             default_language: "en".to_owned(),
+            request_timeout: Some(Duration::from_secs(60)),
         }
     }
 }
@@ -76,10 +81,13 @@ impl Service {
 
     /// Answers one request. Failures become OData error responses.
     pub async fn handle(&self, req: ODataRequest) -> ODataResponse {
-        let mut response = match self.dispatch(&req).await {
-            Ok(r) => r,
-            Err(e) => e.to_response(),
+        let outcome = match self.inner.config.request_timeout {
+            Some(limit) => tokio::time::timeout(limit, self.dispatch(&req))
+                .await
+                .unwrap_or_else(|_| Err(ODataError::new(503, "the request took too long"))),
+            None => self.dispatch(&req).await,
         };
+        let mut response = outcome.unwrap_or_else(|e| e.to_response());
         response
             .headers
             .insert("odata-version", http::HeaderValue::from_static("4.0"));
@@ -144,7 +152,7 @@ impl ServiceBuilder {
         self
     }
 
-    /// Replaces the pager. The default applies no server-side limit.
+    /// Replaces the pager. The default is [`OffsetPaging`] with `DEFAULT_PAGE_SIZE`.
     pub fn paging(mut self, paging: impl PagingProvider + 'static) -> Self {
         self.paging = Arc::new(paging);
         self

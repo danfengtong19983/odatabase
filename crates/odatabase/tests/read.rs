@@ -251,6 +251,56 @@ async fn lambda_scopes(app: App) {
     assert_eq!(app.ids(uri).await, ["1"], "in $orderby");
 }
 
+async fn to_one_semantics(app: App) {
+    let cases = [
+        ("Owner/Name eq 'First Org'", vec!["2", "3"]),
+        ("not (Owner/Name eq 'First Org')", vec!["1", "4"]),
+        ("Owner/Name ne 'First Org'", vec!["1", "4"]),
+        ("Owner/Name eq null", vec!["1", "4"]),
+        ("Owner/Rating gt 4", vec!["2", "3"]),
+        ("not (Owner/Rating gt 4)", vec![]),
+        ("not (Owner/Rating lt 4)", vec!["2", "3"]),
+        ("(Owner/Rating gt 4) eq true", vec!["2", "3"]),
+        ("Owner/Name in ('First Org','x')", vec!["2", "3"]),
+        ("not (Owner/Name in ('First Org'))", vec![]),
+        (
+            "Owner/Name eq 'First Org' or Rating eq 1",
+            vec!["2", "3", "4"],
+        ),
+        ("Owner/Rating gt 4 and Rating gt 3", vec![]),
+        ("Owner/Owner/Name eq 'First Org'", vec![]),
+        ("Owner/Address/City eq 'Berlin'", vec!["2", "3"]),
+        (
+            "Roles/any(r: r/Partner/Owner/Name eq 'First Org')",
+            vec!["2", "3"],
+        ),
+        ("Roles/all(r: r/Partner/Rating gt 2)", vec!["1", "2", "4"]),
+        ("Owner/CreatedAt lt 2024-02-01T00:00:00Z", vec!["2", "3"]),
+    ];
+    for (filter, expected) in cases {
+        let uri = format!("BusinessPartners?$filter={filter}&$orderby=Id");
+        assert_eq!(app.ids(&uri).await, expected, "{filter}");
+    }
+    let ascending = "BusinessPartners?$orderby=Owner/Name,Id";
+    assert_eq!(
+        app.ids(ascending).await,
+        ["1", "4", "2", "3"],
+        "no row is lost, nulls first"
+    );
+    let descending = "BusinessPartners?$orderby=Owner/Name desc,Id desc";
+    assert_eq!(app.ids(descending).await, ["3", "2", "4", "1"]);
+    let twice = "BusinessPartners?$orderby=Owner/Name,Owner/Rating desc,Owner/Address/City,Id";
+    assert_eq!(app.ids(twice).await.len(), 4, "one path used several times");
+    let filtered = "BusinessPartners?$orderby=Owner/Name desc,Id&$filter=Owner/Rating gt 1&$top=1";
+    assert_eq!(app.ids(filtered).await, ["2"]);
+    let deep = "Roles?$orderby=Partner/Owner/Name desc,PartnerId,Code&$top=2";
+    assert_eq!(app.column(deep, "PartnerId").await, ["2", "3"]);
+    let doc = app
+        .ok("BusinessPartners?$orderby=Owner/Name&$count=true&$top=1")
+        .await;
+    assert_eq!(doc["@odata.count"], 4);
+}
+
 async fn select_order_page(app: App) {
     let doc = app
         .ok("BusinessPartners?$select=Name,Address/City&$top=1")
@@ -652,6 +702,7 @@ mod run {
         filter_functions,
         filter_over_navigation,
         lambda_scopes,
+        to_one_semantics,
         select_order_page,
         paths_and_properties,
         casts,
@@ -709,4 +760,55 @@ async fn max_page_size_preference() {
     assert_eq!(doc["value"].as_array().unwrap().len(), 2);
     assert!(doc["@odata.nextLink"].as_str().is_some());
     assert_eq!(app.status("BusinessPartners?$skiptoken=abc").await, 400);
+}
+
+#[tokio::test]
+async fn pages_are_limited_by_default() {
+    let pool = common::sqlite_pool(common::SCHEMA).await;
+    let rows: String = (0..1200).map(|i| format!("('D{i}', NULL, {i}),")).collect();
+    let insert = format!(
+        "INSERT INTO division (code, parent_code, population) VALUES {}",
+        rows.trim_end_matches(',')
+    );
+    sqlx::raw_sql(sqlx::AssertSqlSafe(insert))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let limited = common::App::new(common::builder().build(pool.clone()).unwrap());
+    let doc = limited.ok("Divisions").await;
+    assert_eq!(
+        doc["value"].as_array().unwrap().len(),
+        odatabase::DEFAULT_PAGE_SIZE as usize
+    );
+    assert!(
+        doc["@odata.nextLink"]
+            .as_str()
+            .unwrap()
+            .contains("$skiptoken=1000")
+    );
+    let doc = limited.ok("Divisions?$top=1100").await;
+    assert_eq!(
+        doc["value"].as_array().unwrap().len(),
+        1000,
+        "$top cannot exceed a page"
+    );
+    let next = doc["@odata.nextLink"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("http://test.local/odata/")
+        .to_owned();
+    assert_eq!(
+        limited.ok(&next).await["value"].as_array().unwrap().len(),
+        100
+    );
+    let unlimited = common::builder()
+        .paging(OffsetPaging { page_size: None })
+        .build(pool)
+        .unwrap();
+    let doc = common::App::new(unlimited).ok("Divisions").await;
+    assert_eq!(
+        doc["value"].as_array().unwrap().len(),
+        1205,
+        "only when asked for"
+    );
 }

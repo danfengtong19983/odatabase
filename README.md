@@ -81,8 +81,12 @@ authentication.
 
 ## Things to know before using it
 
-- **Set a page size.** Reads are unlimited by default, like the Java project. Public services
-  should use `.paging(OffsetPaging { page_size: Some(100) })`.
+- **Page size.** Collections return `DEFAULT_PAGE_SIZE` (1000) rows per page with a next link.
+  Responses are built in memory, so `.paging(OffsetPaging { page_size: None })` makes memory use
+  grow with the table.
+- **Timeouts.** `Config::request_timeout` answers 503 after 60 seconds, but the database keeps
+  working. Connect with `Database::connect_postgres`, or set the `statement_timeout` connect
+  option on your own pool, to stop the query itself. SQLite has no equivalent.
 - **Mounting.** `mount` returns a `Router` to merge into your own. Use it rather than `nest`,
   because `nest` answers `/odata/` with a 404 and .NET clients send that trailing slash.
 - **Service URLs** are built from the `Host` and `X-Forwarded-Proto` headers. Run behind a proxy

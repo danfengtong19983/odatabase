@@ -352,6 +352,13 @@ impl PostgresServer {
 
     /// A fresh database with the test schema.
     pub async fn pool(&self, schema: &str) -> sqlx::PgPool {
+        sqlx::PgPool::connect(&self.database(schema).await)
+            .await
+            .unwrap()
+    }
+
+    /// The URL of a fresh database with the test schema.
+    pub async fn database(&self, schema: &str) -> String {
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let admin = sqlx::PgPool::connect(&format!("{}/postgres", self.url))
             .await
@@ -361,14 +368,14 @@ impl PostgresServer {
             .await
             .unwrap();
         admin.close().await;
-        let pool = sqlx::PgPool::connect(&format!("{}/test{n}", self.url))
-            .await
-            .unwrap();
+        let url = format!("{}/test{n}", self.url);
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
         sqlx::raw_sql(AssertSqlSafe(schema.to_owned()))
             .execute(&pool)
             .await
             .unwrap();
-        pool
+        pool.close().await;
+        url
     }
 }
 

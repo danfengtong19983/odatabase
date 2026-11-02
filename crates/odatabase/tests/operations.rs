@@ -485,3 +485,70 @@ async fn table_functions_are_not_available_on_sqlite() {
     .await;
     assert_eq!(app.status("PartnersIn(c='Berlin')").await, 501);
 }
+
+struct Slow;
+
+#[async_trait]
+impl OperationHandler for Slow {
+    async fn call(&self, _: &OperationContext<'_>) -> Result<OperationResult, ODataError> {
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        Ok(OperationResult::Void)
+    }
+}
+
+#[tokio::test]
+async fn slow_requests_are_answered_on_time() {
+    let config = odatabase::Config {
+        request_timeout: Some(std::time::Duration::from_millis(100)),
+        ..odatabase::Config::default()
+    };
+    let app = common::sqlite(|db| {
+        common::builder()
+            .config(config)
+            .action("Slow", |a| a.handler(Slow))
+            .build(db)
+            .unwrap()
+    })
+    .await;
+    let start = std::time::Instant::now();
+    let r = app.request(Method::POST, "Slow", &[], "").await;
+    assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE, "{}", r.text());
+    assert!(start.elapsed().as_secs() < 2, "{:?}", start.elapsed());
+    assert_eq!(
+        app.status("Settings").await,
+        200,
+        "the connection is usable afterwards"
+    );
+}
+
+#[tokio::test]
+async fn statement_timeout_stops_queries_in_the_database() {
+    if !common::postgres_can_run() {
+        return;
+    }
+    let server = common::PostgresServer::start().await;
+    let url = server.database(common::SCHEMA).await;
+    let database = Database::connect_postgres(
+        &url,
+        odatabase::PostgresOptions {
+            statement_timeout: Some(std::time::Duration::from_millis(200)),
+            ..odatabase::PostgresOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+    let service = common::builder()
+        .function("Nap", |f| {
+            f.param::<f64>("s")
+                .returns::<String>()
+                .database_function("pg_sleep")
+        })
+        .build(database)
+        .unwrap();
+    let app = App::new(service);
+    let start = std::time::Instant::now();
+    let r = app.get("Nap(s=5)").await;
+    assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE, "{}", r.text());
+    assert!(start.elapsed().as_secs() < 2, "{:?}", start.elapsed());
+    assert_eq!(app.status("Settings").await, 200);
+}

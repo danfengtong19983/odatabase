@@ -8,8 +8,8 @@ use crate::search::search_condition;
 use crate::{QueryContext, QueryError, Session};
 use odatabase_edm::{PrimitiveKind, Value};
 use odatabase_uri::{
-    AggregateMethod, Aggregation, ExprType, GroupKey, OrderItem, QueryOptions, Segment, SelectItem,
-    Transformation,
+    AggregateMethod, Aggregation, Expr as UExpr, ExprType, GroupKey, OrderItem, QueryOptions,
+    Segment, SelectItem, Transformation,
 };
 use sea_query::{Alias, Asterisk, Expr, ExprTrait, Query, SelectStatement};
 
@@ -102,6 +102,15 @@ impl Stage {
         self.sel.offset(Ord::min(offset, i64::MAX as u64));
     }
 
+    /// A value to group or aggregate, which is computed once per input row.
+    fn input(&mut self, tr: &mut Translator<'_>, e: &UExpr) -> Result<Expr, QueryError> {
+        let frame = self.frame.clone();
+        match tr.left_join_path(&mut self.sel, &frame, e)? {
+            Some(value) => Ok(value),
+            None => tr.expr(&frame, e),
+        }
+    }
+
     fn aggregate(
         &mut self,
         tr: &mut Translator<'_>,
@@ -113,8 +122,8 @@ impl Stage {
         let mut inputs = Vec::new();
         for key in keys {
             let alias = tr.alias();
-            self.sel
-                .expr_as(tr.expr(&self.frame, &key.expr)?, Alias::new(alias.as_str()));
+            let value = self.input(tr, &key.expr)?;
+            self.sel.expr_as(value, Alias::new(alias.as_str()));
             inputs.push(alias);
         }
         let mut measures = Vec::new();
@@ -122,8 +131,8 @@ impl Stage {
             let input = match &item.expr {
                 Some(e) => {
                     let alias = tr.alias();
-                    self.sel
-                        .expr_as(tr.expr(&self.frame, e)?, Alias::new(alias.as_str()));
+                    let value = self.input(tr, e)?;
+                    self.sel.expr_as(value, Alias::new(alias.as_str()));
                     Some(alias)
                 }
                 None => None,
@@ -212,7 +221,7 @@ fn pipeline(
             Transformation::Filter(e) => {
                 stage.refuse_after_window("filter")?;
                 stage.open(tr);
-                let condition = tr.expr(&stage.frame, e)?;
+                let condition = tr.condition(&stage.frame, e)?;
                 stage.sel.and_where(condition);
             }
             Transformation::Search(s) => {
@@ -287,7 +296,7 @@ fn result_query(
     } = pipeline(tr, segments, type_name, options)?;
     let (mut outer, frame) = wrap(tr, sel, &columns);
     if let Some(f) = &options.filter {
-        let condition = tr.expr(&frame, f)?;
+        let condition = tr.condition(&frame, f)?;
         outer.and_where(condition);
     }
     Ok(ResultQuery {

@@ -48,6 +48,9 @@ impl QueryError {
 }
 
 fn database_status(e: &sqlx::Error) -> (u16, String) {
+    if matches!(e, sqlx::Error::PoolTimedOut) {
+        return (503, "the service is busy".into());
+    }
     if let sqlx::Error::Database(db) = e {
         let code = db.code();
         let code = code.as_deref().unwrap_or("");
@@ -58,6 +61,7 @@ fn database_status(e: &sqlx::Error) -> (u16, String) {
             "23503" | "787" => return (409, "a referenced entity is missing or in use".into()),
             "23502" | "1299" => return (400, "a required property is missing".into()),
             "22012" => return (400, "division by zero".into()),
+            "57014" => return (503, "the query took too long".into()),
             "22P02" | "22003" | "22007" | "22008" => {
                 return (400, "a value is out of range for its type".into());
             }

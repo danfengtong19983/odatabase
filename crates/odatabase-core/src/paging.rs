@@ -31,11 +31,23 @@ pub trait PagingProvider: Send + Sync {
     fn page(&self, request: &PageRequest<'_>) -> Result<PageResult, ODataError>;
 }
 
+/// Rows per page unless the service says otherwise. Responses are built in memory, so an
+/// unlimited read costs memory in proportion to the table.
+pub const DEFAULT_PAGE_SIZE: u64 = 1000;
+
 /// Offset paging. The token is the row offset, so it needs no server state.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct OffsetPaging {
     /// Server limit per page. `None` returns everything unless the client asks for pages.
     pub page_size: Option<u64>,
+}
+
+impl Default for OffsetPaging {
+    fn default() -> Self {
+        Self {
+            page_size: Some(DEFAULT_PAGE_SIZE),
+        }
+    }
 }
 
 impl PagingProvider for OffsetPaging {

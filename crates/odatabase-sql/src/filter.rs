@@ -87,6 +87,10 @@ pub struct Translator<'a> {
     pub ctx: QueryContext<'a>,
     /// Aliases from `compute`, in terms of the current statement.
     pub computed: Vec<(String, Expr)>,
+    /// The next expression sits where null and false mean the same, as in a `WHERE`.
+    positive: bool,
+    /// Left joins already on the statement, by source alias and navigation name.
+    joins: Vec<(String, Frame)>,
     next_alias: u32,
     vars: Vec<(String, Frame)>,
 }
@@ -96,6 +100,8 @@ impl<'a> Translator<'a> {
         Self {
             ctx,
             computed: Vec::new(),
+            positive: false,
+            joins: Vec::new(),
             next_alias: 0,
             vars: Vec::new(),
         }
@@ -427,7 +433,216 @@ impl<'a> Translator<'a> {
         Ok(())
     }
 
+    /// Translates a condition of a `WHERE`, which allows faster forms of to-one paths.
+    pub fn condition(&mut self, it: &Frame, e: &UExpr) -> Result<Expr, QueryError> {
+        self.positive = true;
+        self.expr(it, e)
+    }
+
+    /// Reaches a to-one path through a `LEFT JOIN`, for ordering and grouping over many rows.
+    /// Returns `None` when a join could change the row count, or the path needs a subquery.
+    pub fn left_join_path(
+        &mut self,
+        sel: &mut SelectStatement,
+        frame: &Frame,
+        e: &UExpr,
+    ) -> Result<Option<Expr>, QueryError> {
+        let UExpr::Path(path) = e else {
+            return Ok(None);
+        };
+        if path.root != PathRoot::It || !matches!(path.steps.first(), Some(Step::Navigation(_))) {
+            return Ok(None);
+        }
+        if path
+            .steps
+            .iter()
+            .any(|s| matches!(s, Step::Count | Step::Cast(_)))
+        {
+            return Ok(None);
+        }
+        let mut current = frame.clone();
+        let mut steps = path.steps.as_slice();
+        while let Some((Step::Navigation(name), rest)) = steps.split_first() {
+            let nav = self.navigation(&current, name)?;
+            if !self.joins_one_row(nav) {
+                return Ok(None);
+            }
+            current = self.left_join(sel, &current, nav)?;
+            steps = rest;
+        }
+        self.walk(&current, steps).map(Some)
+    }
+
+    /// Whether a navigation matches at most one row: its target columns are exactly the key.
+    fn joins_one_row(&self, nav: &NavigationProperty) -> bool {
+        let model = self.ctx.model;
+        if nav.collection || nav.join_table.is_some() {
+            return false;
+        }
+        let joined_type = model
+            .type_chain(&nav.target)
+            .iter()
+            .any(|t| matches!(t.inheritance, Some(Inheritance::Joined { .. })));
+        let key: Vec<&str> = model
+            .key_of(&nav.target)
+            .iter()
+            .filter_map(|k| model.property(&nav.target, k))
+            .map(|p| p.column.as_str())
+            .collect();
+        !joined_type
+            && key.len() == nav.join.len()
+            && nav.join.iter().all(|p| key.contains(&p.target.as_str()))
+    }
+
+    fn left_join(
+        &mut self,
+        sel: &mut SelectStatement,
+        source: &Frame,
+        nav: &NavigationProperty,
+    ) -> Result<Frame, QueryError> {
+        let id = format!("{}/{}", source.alias, nav.name);
+        if let Some((_, frame)) = self.joins.iter().find(|(k, _)| *k == id) {
+            return Ok(frame.clone());
+        }
+        let model = self.ctx.model;
+        let t = model
+            .entity_type(&nav.target)
+            .ok_or_else(|| QueryError::internal(format!("unknown type {}", nav.target)))?;
+        if !self.ctx.claims.sees(&t.visible_for) {
+            return Err(QueryError::forbidden(format!(
+                "{} is not accessible",
+                t.name
+            )));
+        }
+        let frame = Frame {
+            alias: self.alias(),
+            kind: FrameKind::Entity(t.name.clone()),
+            joined: Vec::new(),
+        };
+        // Restrictions belong in `ON`: in a `WHERE` they would drop the source row as well.
+        let mut on: Vec<Expr> = nav
+            .join
+            .iter()
+            .map(|p| {
+                col(&source.alias, &p.source).equals((
+                    Alias::new(frame.alias.as_str()),
+                    Alias::new(p.target.as_str()),
+                ))
+            })
+            .collect();
+        on.extend(self.discriminator(&frame, t)?);
+        on.extend(self.row_restrictions(&frame, &t.name)?);
+        let on = and_all(on).ok_or_else(|| QueryError::internal("navigation without columns"))?;
+        sel.join_as(
+            sea_query::JoinType::LeftJoin,
+            Alias::new(self.root_table(&t.name)?),
+            Alias::new(frame.alias.as_str()),
+            on,
+        );
+        self.joins.push((id, frame.clone()));
+        Ok(frame)
+    }
+
+    /// `EXISTS` over a to-one path, which lets the database start from the related table.
+    /// A missing relation gives false, where a subquery compared with a literal gives null.
+    fn exists_path(
+        &mut self,
+        frame: &Frame,
+        steps: &[Step],
+        build: &mut dyn FnMut(&mut Self, Expr) -> Result<Expr, QueryError>,
+    ) -> Result<Expr, QueryError> {
+        let Some((Step::Navigation(name), rest)) = steps.split_first() else {
+            return Err(QueryError::internal(
+                "a to-one path starts with a navigation",
+            ));
+        };
+        let nav = self.navigation(frame, name)?;
+        if nav.collection {
+            return Err(QueryError::bad_request("a collection cannot be used here"));
+        }
+        let mut q = Query::select();
+        q.expr(Expr::val(1));
+        let target = self.enter(&mut q, &nav.target)?;
+        self.correlate(&mut q, frame, nav, &target, true)?;
+        let inner = if matches!(rest.first(), Some(Step::Navigation(_))) {
+            self.exists_path(&target, rest, build)?
+        } else {
+            let value = self.walk(&target, rest)?;
+            build(self, value)?
+        };
+        q.and_where(inner);
+        Ok(exists(q))
+    }
+
+    /// The frame and steps of a path that can use [`Translator::exists_path`].
+    fn to_one_path<'p>(&self, it: &Frame, e: &'p UExpr) -> Option<(Frame, &'p [Step])> {
+        let UExpr::Path(p) = e else {
+            return None;
+        };
+        let plain = p
+            .steps
+            .iter()
+            .all(|s| matches!(s, Step::Navigation(_) | Step::Property(_)));
+        if !plain || !matches!(p.steps.first(), Some(Step::Navigation(_))) {
+            return None;
+        }
+        Some((self.root_frame(it, &p.root).ok()?, &p.steps))
+    }
+
     pub fn expr(&mut self, it: &Frame, e: &UExpr) -> Result<Expr, QueryError> {
+        let positive = std::mem::take(&mut self.positive);
+        match e {
+            UExpr::Binary(op @ (BinaryOp::And | BinaryOp::Or), l, r) => {
+                self.positive = positive;
+                let a = self.expr(it, l)?;
+                self.positive = positive;
+                let b = self.expr(it, r)?;
+                Ok(if *op == BinaryOp::And {
+                    a.and(b)
+                } else {
+                    a.or(b)
+                })
+            }
+            UExpr::Binary(
+                op @ (BinaryOp::Gt | BinaryOp::Ge | BinaryOp::Lt | BinaryOp::Le),
+                l,
+                r,
+            ) if positive && is_value_literal(r) => {
+                let Some((frame, steps)) = self.to_one_path(it, l) else {
+                    return self.plain_expr(it, e);
+                };
+                let (op, lty, rty) = (*op, l.ty(), r.ty());
+                let b = self.expr(it, r)?;
+                self.exists_path(&frame, steps, &mut |tr, a| {
+                    let (a, b) = tr.temporal(&lty, &rty, a, b.clone());
+                    Ok(match op {
+                        BinaryOp::Gt => a.gt(b),
+                        BinaryOp::Ge => a.gte(b),
+                        BinaryOp::Lt => a.lt(b),
+                        _ => a.lte(b),
+                    })
+                })
+            }
+            UExpr::In(left, items) if positive && !items.is_empty() => {
+                if !items.iter().all(is_value_literal) {
+                    return self.plain_expr(it, e);
+                }
+                let Some((frame, steps)) = self.to_one_path(it, left) else {
+                    return self.plain_expr(it, e);
+                };
+                let mut values = Vec::with_capacity(items.len());
+                for item in items {
+                    values.push(self.expr(it, item)?);
+                }
+                self.exists_path(&frame, steps, &mut |_, a| {
+                    Ok(a.binary(sea_query::BinOper::In, Expr::tuple(values.clone())))
+                })
+            }
+            _ => self.plain_expr(it, e),
+        }
+    }
+
+    fn plain_expr(&mut self, it: &Frame, e: &UExpr) -> Result<Expr, QueryError> {
         match e {
             UExpr::Literal(Value::Null) => Ok(Expr::cust("NULL")),
             UExpr::Literal(v) => self.literal(v),
@@ -761,7 +976,8 @@ impl<'a> Translator<'a> {
         let translated = match (var, body) {
             (Some(v), Some(b)) => {
                 self.vars.push((v.to_owned(), inner.clone()));
-                let e = self.expr(it, b);
+                // `any` keeps rows where the body is true, and `all` checks `IS NOT TRUE`.
+                let e = self.condition(it, b);
                 self.vars.pop();
                 Some(e?)
             }
@@ -791,8 +1007,7 @@ impl<'a> Translator<'a> {
     ) -> Result<Expr, QueryError> {
         use BinaryOp as B;
         match op {
-            B::And => Ok(self.expr(it, l)?.and(self.expr(it, r)?)),
-            B::Or => Ok(self.expr(it, l)?.or(self.expr(it, r)?)),
+            B::And | B::Or => Err(QueryError::internal("translated by expr")),
             B::Eq | B::Ne => self.equality(it, op == B::Eq, l, r),
             B::Gt | B::Ge | B::Lt | B::Le => {
                 let (a, b) = self.comparable(it, l, r)?;
@@ -846,15 +1061,18 @@ impl<'a> Translator<'a> {
     /// Both operands, adjusted so that SQLite compares timestamps as instants.
     fn comparable(&mut self, it: &Frame, l: &UExpr, r: &UExpr) -> Result<(Expr, Expr), QueryError> {
         let (a, b) = (self.expr(it, l)?, self.expr(it, r)?);
-        let temporal = matches!(l.ty(), ExprType::Primitive(PrimitiveKind::DateTimeOffset))
-            || matches!(r.ty(), ExprType::Primitive(PrimitiveKind::DateTimeOffset));
-        if temporal && self.dialect() == Dialect::Sqlite {
-            return Ok((
+        Ok(self.temporal(&l.ty(), &r.ty(), a, b))
+    }
+
+    fn temporal(&self, l: &ExprType, r: &ExprType, a: Expr, b: Expr) -> (Expr, Expr) {
+        let timestamp = ExprType::Primitive(PrimitiveKind::DateTimeOffset);
+        if (*l == timestamp || *r == timestamp) && self.dialect() == Dialect::Sqlite {
+            return (
                 tpl(self.dialect(), "julianday($1)", [a]),
                 tpl(self.dialect(), "julianday($1)", [b]),
-            ));
+            );
         }
-        Ok((a, b))
+        (a, b)
     }
 
     /// `eq` and `ne` are two-valued in OData: null equals null and differs from everything else.
@@ -883,6 +1101,18 @@ impl<'a> Translator<'a> {
                 operand.is_null()
             } else {
                 operand.is_not_null()
+            });
+        }
+        // Two-valued like `eq` itself, so this form is safe under `not` as well.
+        if positive
+            && is_value_literal(r)
+            && let Some((frame, steps)) = self.to_one_path(it, l)
+        {
+            let (lty, rty) = (l.ty(), r.ty());
+            let b = self.expr(it, r)?;
+            return self.exists_path(&frame, steps, &mut |tr, a| {
+                let (a, b) = tr.temporal(&lty, &rty, a, b.clone());
+                Ok(a.eq(b))
             });
         }
         let (ln, rn) = (self.nullable(it, l), self.nullable(it, r));
@@ -1103,6 +1333,10 @@ impl<'a> Translator<'a> {
             values,
         ))
     }
+}
+
+fn is_value_literal(e: &UExpr) -> bool {
+    matches!(e, UExpr::Literal(v) if !v.is_null())
 }
 
 fn is_temporal(t: &ExprType) -> bool {

@@ -572,7 +572,10 @@ pub fn apply_order(
     orderby: &[OrderItem],
 ) -> Result<(), QueryError> {
     for item in orderby {
-        let e = tr.expr(frame, &item.expr)?;
+        let e = match tr.left_join_path(sel, frame, &item.expr)? {
+            Some(e) => e,
+            None => tr.expr(frame, &item.expr)?,
+        };
         let (order, nulls) = sort_direction(item.descending);
         sel.order_by_expr_with_nulls(e, order, nulls);
     }
@@ -598,7 +601,7 @@ pub fn apply_conditions(
         match t {
             Transformation::Identity => {}
             Transformation::Filter(e) => {
-                let e = tr.expr(frame, e)?;
+                let e = tr.condition(frame, e)?;
                 sel.and_where(e);
             }
             Transformation::Search(s) => {
@@ -619,7 +622,7 @@ pub fn apply_conditions(
         }
     }
     if let Some(f) = &options.filter {
-        let e = tr.expr(frame, f)?;
+        let e = tr.condition(frame, f)?;
         sel.and_where(e);
     }
     if let Some(s) = &options.search {
