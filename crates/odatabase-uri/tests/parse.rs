@@ -181,7 +181,7 @@ fn path_errors_use_the_right_status() {
     assert_eq!(fail("Partners/$count/x", "").status, 400);
     assert_eq!(fail("$all", "").status, 501);
     assert_eq!(
-        fail("Partners", "$apply=concat(identity,identity)").status,
+        fail("Partners", "$apply=traverse(H,N,Id,preorder)").status,
         501
     );
     assert_eq!(fail("Partners", "$nope=1").status, 400);

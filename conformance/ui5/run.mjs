@@ -140,6 +140,39 @@ const results = await page.evaluate(async (serviceUrl) => {
     await new Promise((r) => setTimeout(r, 200));
     return c.length + " of " + b.getLength();
   });
+  await check("$$aggregation with a grand total", async () => {
+    const b = list("/BusinessPartners", {
+      $$aggregation: {
+        group: { Active: {} },
+        aggregate: { Total: { grandTotal: true, name: "Rating", with: "sum" } },
+      },
+      $orderby: "Active desc",
+    });
+    const c = await b.requestContexts(0, 10);
+    const rows = c.map((x) => x.getObject());
+    const total = rows.find((r) => r["@$ui5.node.isTotal"]);
+    if (!total || Number(total.Total) !== 9) throw new Error(JSON.stringify(rows));
+    if (rows.length !== 3 || rows[1].Active !== true) throw new Error(JSON.stringify(rows));
+    return rows.length + " rows, total " + total.Total;
+  });
+  await check("$$aggregation with group levels and subtotals", async () => {
+    const b = list("/BusinessPartners", {
+      $$aggregation: {
+        group: { Name: {} },
+        groupLevels: ["Active"],
+        aggregate: { Total: { subtotals: true, grandTotal: true, name: "Rating", with: "sum" } },
+      },
+      $orderby: "Active desc",
+    });
+    const c = await b.requestContexts(0, 10);
+    const active = c.find((x) => x.getObject().Active === true);
+    if (Number(active.getObject().Total) !== 6) throw new Error(JSON.stringify(active.getObject()));
+    await active.expand();
+    await new Promise((r) => setTimeout(r, 300));
+    const after = await b.requestContexts(0, 10);
+    if (after.length !== c.length + 3) throw new Error(after.length + " rows");
+    return c.length + " levels, " + after.length + " rows after expanding";
+  });
   await check("entity read failure surfaces as an OData error", async () => {
     try { await model.bindContext("/BusinessPartners('nope')").requestObject(); }
     catch (e) { if (e.status === 404) return e.message; throw e; }

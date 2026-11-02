@@ -543,6 +543,99 @@ impl<'a> Translator<'a> {
         Ok(frame)
     }
 
+    /// Names a frame, so that paths can start from it like a lambda variable.
+    pub fn bind(&mut self, name: &str, frame: Frame) {
+        self.vars.push((name.to_owned(), frame));
+    }
+
+    /// A value as a bound parameter.
+    pub fn literal_of(&self, e: &UExpr) -> Result<Expr, QueryError> {
+        match e {
+            UExpr::Literal(v) => self.literal(v),
+            _ => Err(QueryError::internal("expected a literal")),
+        }
+    }
+
+    /// Joins the rows of `name` for `join` and `outerjoin`: one result row per related row.
+    pub fn join_navigation(
+        &mut self,
+        sel: &mut SelectStatement,
+        source: &Frame,
+        name: &str,
+        outer: bool,
+    ) -> Result<Frame, QueryError> {
+        let nav = self.navigation(source, name)?;
+        let model = self.ctx.model;
+        let t = model
+            .entity_type(&nav.target)
+            .ok_or_else(|| QueryError::internal(format!("unknown type {}", nav.target)))?;
+        if !self.ctx.claims.sees(&t.visible_for) {
+            return Err(QueryError::forbidden(format!(
+                "{} is not accessible",
+                t.name
+            )));
+        }
+        if model
+            .type_chain(&t.name)
+            .iter()
+            .any(|c| matches!(c.inheritance, Some(Inheritance::Joined { .. })))
+        {
+            return Err(QueryError::not_implemented(
+                "join to a joined inheritance type",
+            ));
+        }
+        let kind = match outer {
+            true => sea_query::JoinType::LeftJoin,
+            false => sea_query::JoinType::InnerJoin,
+        };
+        let frame = Frame {
+            alias: self.alias(),
+            kind: FrameKind::Entity(t.name.clone()),
+            joined: Vec::new(),
+        };
+        let equal = |a: &str, ac: &str, b: &str, bc: &str| {
+            col(a, ac).equals((Alias::new(b), Alias::new(bc)))
+        };
+        // Restrictions belong in `ON`, so that `outerjoin` keeps rows without visible relations.
+        let mut on: Vec<Expr> = Vec::new();
+        if let Some(jt) = &nav.join_table {
+            let link = self.alias();
+            let conditions = jt
+                .source
+                .iter()
+                .map(|p| equal(&source.alias, &p.source, &link, &p.target));
+            let first =
+                and_all(conditions).ok_or_else(|| QueryError::internal("empty join table"))?;
+            sel.join_as(
+                kind,
+                Alias::new(jt.table.as_str()),
+                Alias::new(link.as_str()),
+                first,
+            );
+            on.extend(
+                jt.target
+                    .iter()
+                    .map(|p| equal(&link, &p.source, &frame.alias, &p.target)),
+            );
+        } else {
+            on.extend(
+                nav.join
+                    .iter()
+                    .map(|p| equal(&source.alias, &p.source, &frame.alias, &p.target)),
+            );
+        }
+        on.extend(self.discriminator(&frame, t)?);
+        on.extend(self.row_restrictions(&frame, &t.name)?);
+        let on = and_all(on).ok_or_else(|| QueryError::internal("navigation without columns"))?;
+        sel.join_as(
+            kind,
+            Alias::new(self.root_table(&t.name)?),
+            Alias::new(frame.alias.as_str()),
+            on,
+        );
+        Ok(frame)
+    }
+
     /// `EXISTS` over a to-one path, which lets the database start from the related table.
     /// A missing relation gives false, where a subquery compared with a literal gives null.
     fn exists_path(
@@ -699,7 +792,7 @@ impl<'a> Translator<'a> {
         }
     }
 
-    fn root_frame(&self, it: &Frame, root: &PathRoot) -> Result<Frame, QueryError> {
+    pub fn root_frame(&self, it: &Frame, root: &PathRoot) -> Result<Frame, QueryError> {
         match root {
             PathRoot::It => Ok(it.clone()),
             PathRoot::Var(name) => self

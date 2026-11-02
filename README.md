@@ -56,7 +56,7 @@ upper camel case (`FirstName`). Set `name` or `column` to override either.
 | Model | Complex types, enums and flags, collection properties, singletons, single-table and joined inheritance, media streams, geospatial properties (stored as GeoJSON) |
 | Mapped properties | Language-dependent descriptions, transient properties with calculators |
 | Reads | Key and navigation paths, `$filter` with lambdas and built-in functions, `$select`, `$orderby`, `$top`, `$skip`, `$count`, `$search`, `$ref`, `$value`, casts |
-| `$apply` | `aggregate`, `groupby`, `filter`, `search`, `compute`, `orderby`, `top`, `skip` and `identity` in pipelines, with `sum`, `min`, `max`, `average`, `countdistinct` and `$count` |
+| `$apply` | `aggregate`, `groupby` (with `rollup` and `$all`), `filter`, `search`, `compute`, `orderby`, `top`, `skip`, `identity`, `concat`, `join`, `outerjoin`, `expand`, and the `topcount`, `topsum`, `toppercent` family with its `bottom` forms, in pipelines, with `sum`, `min`, `max`, `average`, `countdistinct` and `$count` |
 | `$expand` | Nested options, per-parent `$top` and `$skip`, `$levels`, `/$count`, `/$ref`, `*`, join tables |
 | Writes | POST, PATCH, PUT, DELETE, upsert, property and `$value` updates, deep insert, deep update, `@odata.bind`, `$ref` links, ETag preconditions, `Prefer: return` |
 | `$batch` | Multipart and JSON formats, atomic change sets, `Content-ID` references, `continue-on-error` |
@@ -118,8 +118,9 @@ These return a status rather than a wrong result:
 | Feature | Response |
 |---|---|
 | `$compute`, `$all`, `$crossjoin`, `$entity`, async requests | 501 |
-| In `$apply`: `concat`, `nest`, `join`, `expand`, `rollup`, `topcount` and similar, custom aggregates, `from`, `Nav/$count` | 501 |
-| `$expand` or `$search` next to `$apply`, and `$apply` inside `$expand` | 501 |
+| In `$apply`: `nest`, `ancestors`, `descendants`, `traverse`, custom aggregates, `from` with more than one level, `join` on anything but navigation | 501 |
+| `join` with no later aggregation, and `expand` before an aggregation or inside `concat` | 501 |
+| `$expand` or `$search` after an aggregation, and anything but `filter` and `search` in `$apply` inside `$expand` | 501 |
 | Date and duration arithmetic, `maxdatetime`, `mindatetime`, `geo.*`, `hassubset` in `$filter` | 501 |
 | Delta payloads (`Nav@delta`) | 501 |
 | Navigation properties inside complex types | 501 |
@@ -128,8 +129,9 @@ These return a status rather than a wrong result:
 | Data formats other than JSON | 406 |
 
 `groupby` keys and aggregated values can follow to-one navigation only: a to-many path is a 400.
-`orderby`, `top` and `skip` transformations need an aggregation later in the pipeline. `$metadata`
-doesn't announce `$apply` through the `Aggregation.ApplySupported` annotation yet.
+Each entity set announces its transformations through `Aggregation.ApplySupported`. A `concat` arm
+that keeps entities leaves properties the caller can't see empty, and a filter required by
+`FilterRestrictions` must hold in every arm.
 
 `$levels=max` stops at `ExpandLimits::max_levels`, 8 by default. `$expand` has no server-driven
 paging, and `PagingProvider` applies to top-level collections only. Transient properties work

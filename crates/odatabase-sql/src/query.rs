@@ -1,6 +1,8 @@
 //! Builds and runs the reads of a request: entity sets, navigation paths and counts.
 
-use crate::aggregate::{count_aggregated, decode_for};
+use crate::aggregate::{
+    count_aggregated, decode_for, narrows_entities, pipeline_keys, pipeline_order,
+};
 use crate::db::ColumnDecode;
 use crate::expand::{ExpandLimits, expand_records};
 use crate::filter::{Frame, FrameKind, Translator, and_all, col};
@@ -614,11 +616,8 @@ pub fn apply_conditions(
                     tr.computed.push((item.alias.clone(), e));
                 }
             }
-            _ => {
-                return Err(QueryError::not_implemented(
-                    "orderby, top and skip transformations without an aggregation",
-                ));
-            }
+            // Narrowing steps were applied by `pipeline_keys`.
+            _ => {}
         }
     }
     if let Some(f) = &options.filter {
@@ -674,6 +673,10 @@ fn build_read(
     let mut tr = Translator::new(ctx.clone());
     let mut sel = Query::select();
     let mut frame = source(&mut tr, &mut sel, req.segments, req.type_name)?;
+    if narrows_entities(req.options) {
+        let keys = pipeline_keys(&mut tr, req.segments, req.type_name, req.options)?;
+        sel.and_where(Expr::tuple(entity_keys(&tr, &frame, req.type_name)?).in_subquery(keys));
+    }
     let mut layout = select_entity(&mut tr, &mut sel, &mut frame, req.type_name, req.options)?;
     {
         let mut es = EntitySelect {
@@ -712,13 +715,13 @@ fn build_read(
         }
         layout = es.layout;
     }
-    apply_order(
-        &mut tr,
-        &mut sel,
-        &frame,
-        req.type_name,
-        &req.options.orderby,
-    )?;
+    let inner_order = pipeline_order(req.options);
+    let requested = if req.options.orderby.is_empty() {
+        &inner_order
+    } else {
+        &req.options.orderby
+    };
+    apply_order(&mut tr, &mut sel, &frame, req.type_name, requested)?;
     if let Some(top) = req.page.top {
         sel.limit(top);
     }
@@ -729,6 +732,20 @@ fn build_read(
         };
     }
     Ok((sel, layout))
+}
+
+fn entity_keys(
+    tr: &Translator<'_>,
+    frame: &Frame,
+    type_name: &str,
+) -> Result<Vec<Expr>, QueryError> {
+    let model = tr.ctx.model;
+    model
+        .key_of(type_name)
+        .iter()
+        .filter_map(|k| model.property(type_name, k))
+        .map(|p| tr.scalar(frame, p))
+        .collect()
 }
 
 fn computed_items(t: &Transformation) -> Option<&Vec<ComputeItem>> {
@@ -767,6 +784,10 @@ pub async fn count_collection(
     let mut tr = Translator::new(ctx.clone());
     let mut sel = Query::select();
     let frame = source(&mut tr, &mut sel, segments, type_name)?;
+    if narrows_entities(options) {
+        let keys = pipeline_keys(&mut tr, segments, type_name, options)?;
+        sel.and_where(Expr::tuple(entity_keys(&tr, &frame, type_name)?).in_subquery(keys));
+    }
     sel.expr(Expr::col(Asterisk).count());
     apply_conditions(&mut tr, &mut sel, &frame, type_name, options)?;
     let rows = session

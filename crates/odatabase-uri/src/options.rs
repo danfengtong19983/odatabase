@@ -1,6 +1,7 @@
 //! System query options.
 
 use crate::UriError;
+use crate::apply::parse_apply;
 use crate::ast::*;
 use crate::expr::{Aliases, Scope, parse_expression, property_type};
 use crate::path::Limits;
@@ -69,8 +70,7 @@ pub fn apply_option(
         "$format" => o.format = Some(value.to_owned()),
         // The target of `DELETE .../$ref?$id=...`, read by the write path.
         "$id" => o.custom.push((name.to_owned(), value.to_owned())),
-        "$apply" => return Err(UriError::not_implemented("$apply inside $expand")),
-        "$compute" | "$schemaversion" => {
+        "$apply" | "$compute" | "$schemaversion" => {
             return Err(UriError::not_implemented(format!(
                 "{name} is not supported"
             )));
@@ -197,8 +197,10 @@ fn expand(ctx: &OptionContext, scope: &Scope, value: &str) -> Result<Vec<ExpandI
     if ctx.expand_depth >= ctx.limits.max_expand_depth {
         return Err(UriError::bad_request("$expand is nested too deeply"));
     }
-    let Scope::Entity(owner) = scope else {
-        return Err(UriError::bad_request("$expand needs an entity"));
+    let owner = match scope {
+        Scope::Entity(owner) => owner,
+        Scope::Applied(a) if !a.aggregated => &a.entity,
+        _ => return Err(UriError::bad_request("$expand needs an entity")),
     };
     let mut items = Vec::new();
     for raw in split_top_level(value, ',') {
@@ -305,12 +307,34 @@ fn apply_expand_options(
         limits: ctx.limits,
         expand_depth: ctx.expand_depth + 1,
     };
-    let scope = Scope::Entity(item.target.clone());
-    for part in split_top_level(nested, ';') {
+    let mut scope = Scope::Entity(item.target.clone());
+    let parts = split_top_level(nested, ';');
+    // `$apply` comes first, whatever the order: the other options see what it leaves.
+    if let Some(text) = parts.iter().find_map(|p| p.trim().strip_prefix("$apply=")) {
+        let parsed = parse_apply(&inner, &item.target, text)?;
+        let plain = parsed.steps.iter().all(|t| {
+            matches!(
+                t,
+                Transformation::Identity | Transformation::Filter(_) | Transformation::Search(_)
+            )
+        });
+        if !plain {
+            return Err(UriError::not_implemented(
+                "$apply inside $expand other than filter and search",
+            ));
+        }
+        item.options.apply = parsed.steps;
+        item.options.expand.extend(parsed.expand);
+        scope = parsed.scope;
+    }
+    for part in parts {
         let (name, value) = part
             .split_once('=')
             .ok_or_else(|| UriError::bad_request(format!("invalid expand option {part}")))?;
         let name = name.trim();
+        if name == "$apply" {
+            continue;
+        }
         if name == "$levels" {
             item.levels = Some(if value == "max" {
                 Levels::Max

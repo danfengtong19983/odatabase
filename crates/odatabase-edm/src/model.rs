@@ -420,11 +420,16 @@ impl Annotation {
 }
 
 /// The standard OASIS vocabularies, by alias. Referenced from `$metadata` when used.
-pub const VOCABULARIES: [(&str, &str, &str); 5] = [
+pub const VOCABULARIES: [(&str, &str, &str); 6] = [
     (
         "Core",
         "Org.OData.Core.V1",
         "https://oasis-tcs.github.io/odata-vocabularies/vocabularies/Org.OData.Core.V1.xml",
+    ),
+    (
+        "Aggregation",
+        "Org.OData.Aggregation.V1",
+        "https://oasis-tcs.github.io/odata-vocabularies/vocabularies/Org.OData.Aggregation.V1.xml",
     ),
     (
         "Capabilities",
