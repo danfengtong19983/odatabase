@@ -3,7 +3,8 @@
 Runs OData clients written by other projects against
 [conformance_server](../crates/odatabase/examples/conformance_server.rs), so the server is
 checked by code that doesn't share its assumptions. Each script starts a fresh in-memory server
-and runs the client in Docker. They aren't part of `cargo test`.
+and runs the client in Docker. They aren't part of `cargo test`, but CI runs them on every change.
+A script's exit code is the client's result.
 
 | Script | Client | What it checks |
 |---|---|---|
@@ -18,7 +19,9 @@ for s in dotnet java ui5 python openapi; do conformance/run-$s.sh; done
 ```
 
 `run-ui5.sh` needs internet access and always uses the current OpenUI5 release, because
-`sdk.openui5.org` removes old ones.
+`sdk.openui5.org` removes old ones. A new release can change its result, so its CI job doesn't
+block a change. The other client versions are pinned. On Linux, set `BIND=0.0.0.0` so that
+containers can reach the server.
 
 ## Client behavior the tests work around
 
