@@ -532,6 +532,27 @@ async fn aggregation_features(app: App) {
         400,
         "NonFilterableProperties applies in the pipeline"
     );
+    let arm = "Lockeds?$apply=concat(filter(Name eq 'a'),filter(Code eq 'x'))";
+    assert_eq!(app.status(arm).await, 400, "and in every arm of concat");
+    let open = "Lockeds?$apply=concat(filter(Code eq 'x'),identity)";
+    assert_eq!(
+        app.status(open).await,
+        400,
+        "a required filter must hold in every arm"
+    );
+    let both = "Lockeds?$apply=concat(filter(Code eq 'x'),filter(Code eq 'y'))";
+    assert_eq!(app.status(both).await, 200);
+    let doc = app
+        .ok("Places?$apply=filter(true)&$search=bike&$count=true")
+        .await;
+    assert_eq!(
+        doc["@odata.count"], 2,
+        "$search follows a pipeline of entities"
+    );
+    let doc = app
+        .ok("Places?$apply=search(bike)/top(1)&$count=true")
+        .await;
+    assert_eq!(doc["@odata.count"], 1, "top acts on what search found");
 }
 
 async fn annotations_in_metadata(app: App) {

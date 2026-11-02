@@ -347,6 +347,7 @@ foreach (var query in new[] {
     "compute(Rating mul 2 as Twice)/aggregate(Twice with sum as Total)",
     "compute(year(Founded) as Y)/groupby((Y),aggregate($count as Rows))",
     "groupby((Abc),aggregate(Rating with sum as Total))/compute(Total mul 2 as Doubled)",
+    "expand(Roles,filter(Code gt 1))",
 }) {
     var url = "BusinessPartners?$apply=" + query;
     try
@@ -359,6 +360,33 @@ foreach (var query in new[] {
         var doc = System.Text.Json.JsonDocument.Parse(r.Body);
         var rows = doc.RootElement.GetProperty("value").GetArrayLength();
         Report($"{url} ({parsed.Transformations.Count()} steps, {rows} rows)");
+    }
+    catch (Exception e) { Report(url, e); }
+}
+
+// Transformations of Aggregation 4.0 that the Microsoft parser predates: the server must answer.
+foreach (var query in new[] {
+    "concat(groupby((Abc),aggregate(Rating with sum as Total)),aggregate(Rating with sum as Total))",
+    "concat(orderby(Rating desc)/top(1),aggregate($count as Rows))",
+    "groupby((rollup($all,Abc)),aggregate($count as Rows))",
+    "topcount(2,Rating)",
+    "bottomcount(2,Rating)",
+    "topsum(6,Rating)",
+    "bottompercent(50,Rating)",
+    "orderby(Name desc)/skip(1)/top(2)",
+    "join(Roles as R)/groupby((R/Code),aggregate($count as Rows))",
+    "outerjoin(Roles as R)/aggregate($count as Rows)",
+    "aggregate(Roles/$count as Rows)",
+    "aggregate(Rating with sum from Abc with average as Mean)",
+}) {
+    var url = "BusinessPartners?$apply=" + query;
+    try
+    {
+        var uri = new Uri($"{root}/BusinessPartners?$apply={Uri.EscapeDataString(query)}");
+        var r = await Send(HttpMethod.Get, uri.ToString());
+        r.Ensure(url);
+        var rows = System.Text.Json.JsonDocument.Parse(r.Body).RootElement.GetProperty("value").GetArrayLength();
+        Report($"{url} ({rows} rows)");
     }
     catch (Exception e) { Report(url, e); }
 }

@@ -66,6 +66,7 @@ pub fn parse_with(
         expand_depth: 0,
     };
     let mut scope = scope;
+    let mut applied_expand = Vec::new();
     if let Some((_, text)) = raw.iter().find(|(n, _)| n == "$apply") {
         let entity = match segments.last().map(Segment::target) {
             Some(Target::EntityCollection(t)) => t,
@@ -83,16 +84,19 @@ pub fn parse_with(
                 ));
             }
         };
-        for unsupported in ["$expand", "$search"] {
-            if raw.iter().any(|(n, _)| n == unsupported) {
-                return Err(UriError::not_implemented(format!(
-                    "{unsupported} with $apply"
-                )));
+        let parsed = parse_apply(&ctx, entity, text)?;
+        options.apply = parsed.steps;
+        if options.is_aggregated() {
+            for unsupported in ["$expand", "$search"] {
+                if raw.iter().any(|(n, _)| n == unsupported) {
+                    return Err(UriError::not_implemented(format!(
+                        "{unsupported} after an aggregation"
+                    )));
+                }
             }
         }
-        let (steps, after) = parse_apply(&ctx, entity, text)?;
-        options.apply = steps;
-        scope = after;
+        applied_expand = parsed.expand;
+        scope = parsed.scope;
     }
     for (name, value) in &raw {
         if name.starts_with('$') {
@@ -106,6 +110,7 @@ pub fn parse_with(
             options.custom.push((name.clone(), value.clone()));
         }
     }
+    options.expand.extend(applied_expand);
     Ok(ODataUri {
         path: segments,
         options,

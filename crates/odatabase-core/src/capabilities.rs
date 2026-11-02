@@ -104,18 +104,50 @@ fn each_path(e: &Expr, visit: &mut dyn FnMut(&Path)) {
     }
 }
 
+fn pipeline_filters<'o>(steps: &'o [Transformation], out: &mut Vec<&'o Expr>) {
+    for t in steps {
+        match t {
+            Transformation::Filter(e) => out.push(e),
+            Transformation::Concat { branches, .. } => {
+                branches.iter().for_each(|b| pipeline_filters(b, out));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// What a pipeline guarantees about every row it leaves: whether a filter applied, and on what.
+/// A filter in `concat` only counts when all of its arms have it.
+fn guaranteed_filters(steps: &[Transformation]) -> (bool, Vec<String>) {
+    let (mut filtered, mut used) = (false, Vec::new());
+    for t in steps {
+        match t {
+            Transformation::Filter(e) => {
+                filtered = true;
+                each_path(e, &mut |p| used.extend(property_path(p)));
+            }
+            Transformation::Concat { branches, .. } => {
+                let arms: Vec<_> = branches.iter().map(|b| guaranteed_filters(b)).collect();
+                filtered |= arms.iter().all(|(f, _)| *f);
+                if let Some((_, first)) = arms.first() {
+                    let shared = first
+                        .iter()
+                        .filter(|p| arms.iter().all(|(_, u)| u.contains(p)));
+                    used.extend(shared.cloned());
+                }
+            }
+            _ => {}
+        }
+    }
+    (filtered, used)
+}
+
 /// Checks the options of a read against the restrictions of `type_name`.
 pub fn check_read(model: &Model, type_name: &str, uri: &ODataUri) -> Result<(), ODataError> {
     let o = &uri.options;
     // Filters inside `$apply` must obey the same restrictions as `$filter`.
-    let filters: Vec<&Expr> = o
-        .filter
-        .iter()
-        .chain(o.apply.iter().filter_map(|t| match t {
-            Transformation::Filter(e) => Some(e),
-            _ => None,
-        }))
-        .collect();
+    let mut filters: Vec<&Expr> = o.filter.iter().collect();
+    pipeline_filters(&o.apply, &mut filters);
     if let Some(r) = restriction(model, type_name, "FilterRestrictions") {
         if !filters.is_empty() && flag(r, "Filterable") == Some(false) {
             return Err(ODataError::bad_request(format!(
@@ -126,13 +158,13 @@ pub fn check_read(model: &Model, type_name: &str, uri: &ODataUri) -> Result<(), 
         if !keyed || matches!(uri.target(), Target::Count) {
             let required = paths(r, "RequiredProperties");
             let needs_filter = flag(r, "RequiresFilter") == Some(true) || !required.is_empty();
-            if needs_filter && filters.is_empty() {
+            let (filtered, mut used) = guaranteed_filters(&o.apply);
+            if needs_filter && !filtered && o.filter.is_none() {
                 return Err(ODataError::bad_request(format!(
                     "{type_name} requires a $filter"
                 )));
             }
-            let mut used = Vec::new();
-            for f in &filters {
+            if let Some(f) = &o.filter {
                 each_path(f, &mut |p| used.extend(property_path(p)));
             }
             for name in required {

@@ -82,12 +82,16 @@ pub fn parse_expression(
     aliases: &Aliases,
     max_depth: u32,
 ) -> Result<Expr, UriError> {
+    let vars = match &scope {
+        Scope::Applied(a) => a.joins.clone(),
+        _ => Vec::new(),
+    };
     let mut p = ExprParser {
         model,
         tokens: tokenize(text)?,
         pos: 0,
         scope,
-        vars: Vec::new(),
+        vars,
         aliases,
         depth: 0,
         max_depth,

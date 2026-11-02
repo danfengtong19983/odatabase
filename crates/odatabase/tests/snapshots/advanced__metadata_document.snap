@@ -5,6 +5,7 @@ expression: "odatabase::edm::to_csdl_xml(service(pool.into()).model())"
 <?xml version="1.0" encoding="utf-8"?>
 <edmx:Edmx Version="4.0" xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
 <edmx:Reference Uri="https://oasis-tcs.github.io/odata-vocabularies/vocabularies/Org.OData.Core.V1.xml"><edmx:Include Namespace="Org.OData.Core.V1" Alias="Core"/></edmx:Reference>
+<edmx:Reference Uri="https://oasis-tcs.github.io/odata-vocabularies/vocabularies/Org.OData.Aggregation.V1.xml"><edmx:Include Namespace="Org.OData.Aggregation.V1" Alias="Aggregation"/></edmx:Reference>
 <edmx:Reference Uri="https://oasis-tcs.github.io/odata-vocabularies/vocabularies/Org.OData.Capabilities.V1.xml"><edmx:Include Namespace="Org.OData.Capabilities.V1" Alias="Capabilities"/></edmx:Reference>
 <edmx:DataServices>
 <Schema Namespace="Adv" xmlns="http://docs.oasis-open.org/odata/ns/edm">
@@ -69,11 +70,16 @@ expression: "odatabase::edm::to_csdl_xml(service(pool.into()).model())"
 <Property Name="Name" Type="Edm.String" Nullable="false"/>
 </EntityType>
 <EntityContainer Name="Container">
-<EntitySet Name="Documents" EntityType="Adv.Document"></EntitySet>
-<EntitySet Name="Lockeds" EntityType="Adv.Locked"></EntitySet>
-<EntitySet Name="Places" EntityType="Adv.Place"></EntitySet>
-<EntitySet Name="Typeds" EntityType="Adv.Typed"></EntitySet>
-<EntitySet Name="Vehicles" EntityType="Adv.Vehicle"></EntitySet>
+<EntitySet Name="Documents" EntityType="Adv.Document"><Annotation Term="Aggregation.ApplySupported"><Record><PropertyValue Property="Transformations"><Collection><String>aggregate</String><String>bottomcount</String><String>bottompercent</String><String>bottomsum</String><String>compute</String><String>concat</String><String>expand</String><String>filter</String><String>groupby</String><String>identity</String><String>join</String><String>orderby</String><String>outerjoin</String><String>search</String><String>skip</String><String>top</String><String>topcount</String><String>toppercent</String><String>topsum</String></Collection></PropertyValue></Record></Annotation>
+</EntitySet>
+<EntitySet Name="Lockeds" EntityType="Adv.Locked"><Annotation Term="Aggregation.ApplySupported"><Record><PropertyValue Property="Transformations"><Collection><String>aggregate</String><String>bottomcount</String><String>bottompercent</String><String>bottomsum</String><String>compute</String><String>concat</String><String>expand</String><String>filter</String><String>groupby</String><String>identity</String><String>join</String><String>orderby</String><String>outerjoin</String><String>search</String><String>skip</String><String>top</String><String>topcount</String><String>toppercent</String><String>topsum</String></Collection></PropertyValue></Record></Annotation>
+</EntitySet>
+<EntitySet Name="Places" EntityType="Adv.Place"><Annotation Term="Aggregation.ApplySupported"><Record><PropertyValue Property="Transformations"><Collection><String>aggregate</String><String>bottomcount</String><String>bottompercent</String><String>bottomsum</String><String>compute</String><String>concat</String><String>expand</String><String>filter</String><String>groupby</String><String>identity</String><String>join</String><String>orderby</String><String>outerjoin</String><String>search</String><String>skip</String><String>top</String><String>topcount</String><String>toppercent</String><String>topsum</String></Collection></PropertyValue></Record></Annotation>
+</EntitySet>
+<EntitySet Name="Typeds" EntityType="Adv.Typed"><Annotation Term="Aggregation.ApplySupported"><Record><PropertyValue Property="Transformations"><Collection><String>aggregate</String><String>bottomcount</String><String>bottompercent</String><String>bottomsum</String><String>compute</String><String>concat</String><String>expand</String><String>filter</String><String>groupby</String><String>identity</String><String>join</String><String>orderby</String><String>outerjoin</String><String>search</String><String>skip</String><String>top</String><String>topcount</String><String>toppercent</String><String>topsum</String></Collection></PropertyValue></Record></Annotation>
+</EntitySet>
+<EntitySet Name="Vehicles" EntityType="Adv.Vehicle"><Annotation Term="Aggregation.ApplySupported"><Record><PropertyValue Property="Transformations"><Collection><String>aggregate</String><String>bottomcount</String><String>bottompercent</String><String>bottomsum</String><String>compute</String><String>concat</String><String>expand</String><String>filter</String><String>groupby</String><String>identity</String><String>join</String><String>orderby</String><String>outerjoin</String><String>search</String><String>skip</String><String>top</String><String>topcount</String><String>toppercent</String><String>topsum</String></Collection></PropertyValue></Record></Annotation>
+</EntitySet>
 </EntityContainer>
 </Schema>
 </edmx:DataServices>

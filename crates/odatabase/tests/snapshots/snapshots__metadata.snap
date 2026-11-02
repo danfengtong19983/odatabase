@@ -4,6 +4,7 @@ expression: to_csdl_xml(&model())
 ---
 <?xml version="1.0" encoding="utf-8"?>
 <edmx:Edmx Version="4.0" xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
+<edmx:Reference Uri="https://oasis-tcs.github.io/odata-vocabularies/vocabularies/Org.OData.Aggregation.V1.xml"><edmx:Include Namespace="Org.OData.Aggregation.V1" Alias="Aggregation"/></edmx:Reference>
 <edmx:DataServices>
 <Schema Namespace="Test" xmlns="http://docs.oasis-open.org/odata/ns/edm">
 <EnumType Name="Abc"><Member Name="A" Value="1"/><Member Name="B" Value="2"/><Member Name="C" Value="3"/></EnumType>
@@ -83,11 +84,16 @@ expression: to_csdl_xml(&model())
 <Property Name="Tags" Type="Collection(Edm.String)" Nullable="false"/>
 </EntityType>
 <EntityContainer Name="Container">
-<EntitySet Name="BusinessPartners" EntityType="Test.BusinessPartner"><NavigationPropertyBinding Path="Roles" Target="Roles"/><NavigationPropertyBinding Path="Projects" Target="Projects"/><NavigationPropertyBinding Path="Owner" Target="BusinessPartners"/><NavigationPropertyBinding Path="Owned" Target="BusinessPartners"/></EntitySet>
-<EntitySet Name="Divisions" EntityType="Test.Division"><NavigationPropertyBinding Path="Parent" Target="Divisions"/><NavigationPropertyBinding Path="Children" Target="Divisions"/></EntitySet>
-<EntitySet Name="Projects" EntityType="Test.Project"><NavigationPropertyBinding Path="Partners" Target="BusinessPartners"/><NavigationPropertyBinding Path="Tickets" Target="Tickets"/></EntitySet>
-<EntitySet Name="Roles" EntityType="Test.Role"><NavigationPropertyBinding Path="Partner" Target="BusinessPartners"/></EntitySet>
-<EntitySet Name="Tickets" EntityType="Test.Ticket"></EntitySet>
+<EntitySet Name="BusinessPartners" EntityType="Test.BusinessPartner"><NavigationPropertyBinding Path="Roles" Target="Roles"/><NavigationPropertyBinding Path="Projects" Target="Projects"/><NavigationPropertyBinding Path="Owner" Target="BusinessPartners"/><NavigationPropertyBinding Path="Owned" Target="BusinessPartners"/><Annotation Term="Aggregation.ApplySupported"><Record><PropertyValue Property="Transformations"><Collection><String>aggregate</String><String>bottomcount</String><String>bottompercent</String><String>bottomsum</String><String>compute</String><String>concat</String><String>expand</String><String>filter</String><String>groupby</String><String>identity</String><String>join</String><String>orderby</String><String>outerjoin</String><String>search</String><String>skip</String><String>top</String><String>topcount</String><String>toppercent</String><String>topsum</String></Collection></PropertyValue></Record></Annotation>
+</EntitySet>
+<EntitySet Name="Divisions" EntityType="Test.Division"><NavigationPropertyBinding Path="Parent" Target="Divisions"/><NavigationPropertyBinding Path="Children" Target="Divisions"/><Annotation Term="Aggregation.ApplySupported"><Record><PropertyValue Property="Transformations"><Collection><String>aggregate</String><String>bottomcount</String><String>bottompercent</String><String>bottomsum</String><String>compute</String><String>concat</String><String>expand</String><String>filter</String><String>groupby</String><String>identity</String><String>join</String><String>orderby</String><String>outerjoin</String><String>search</String><String>skip</String><String>top</String><String>topcount</String><String>toppercent</String><String>topsum</String></Collection></PropertyValue></Record></Annotation>
+</EntitySet>
+<EntitySet Name="Projects" EntityType="Test.Project"><NavigationPropertyBinding Path="Partners" Target="BusinessPartners"/><NavigationPropertyBinding Path="Tickets" Target="Tickets"/><Annotation Term="Aggregation.ApplySupported"><Record><PropertyValue Property="Transformations"><Collection><String>aggregate</String><String>bottomcount</String><String>bottompercent</String><String>bottomsum</String><String>compute</String><String>concat</String><String>expand</String><String>filter</String><String>groupby</String><String>identity</String><String>join</String><String>orderby</String><String>outerjoin</String><String>search</String><String>skip</String><String>top</String><String>topcount</String><String>toppercent</String><String>topsum</String></Collection></PropertyValue></Record></Annotation>
+</EntitySet>
+<EntitySet Name="Roles" EntityType="Test.Role"><NavigationPropertyBinding Path="Partner" Target="BusinessPartners"/><Annotation Term="Aggregation.ApplySupported"><Record><PropertyValue Property="Transformations"><Collection><String>aggregate</String><String>bottomcount</String><String>bottompercent</String><String>bottomsum</String><String>compute</String><String>concat</String><String>expand</String><String>filter</String><String>groupby</String><String>identity</String><String>join</String><String>orderby</String><String>outerjoin</String><String>search</String><String>skip</String><String>top</String><String>topcount</String><String>toppercent</String><String>topsum</String></Collection></PropertyValue></Record></Annotation>
+</EntitySet>
+<EntitySet Name="Tickets" EntityType="Test.Ticket"><Annotation Term="Aggregation.ApplySupported"><Record><PropertyValue Property="Transformations"><Collection><String>aggregate</String><String>bottomcount</String><String>bottompercent</String><String>bottomsum</String><String>compute</String><String>concat</String><String>expand</String><String>filter</String><String>groupby</String><String>identity</String><String>join</String><String>orderby</String><String>outerjoin</String><String>search</String><String>skip</String><String>top</String><String>topcount</String><String>toppercent</String><String>topsum</String></Collection></PropertyValue></Record></Annotation>
+</EntitySet>
 <Singleton Name="Settings" Type="Test.Setting"></Singleton>
 </EntityContainer>
 </Schema>

@@ -12,7 +12,9 @@ impl QueryOptions {
         self.apply.iter().any(|t| {
             matches!(
                 t,
-                Transformation::Aggregate(_) | Transformation::GroupBy { .. }
+                Transformation::Aggregate(_)
+                    | Transformation::GroupBy { .. }
+                    | Transformation::Concat { .. }
             )
         })
     }
@@ -35,6 +37,7 @@ impl QueryOptions {
                         .collect();
                     columns.extend(aggregates.iter().map(Aggregation::column));
                 }
+                Transformation::Concat { columns: all, .. } => columns = all.clone(),
                 Transformation::Compute(items) if !columns.is_empty() => {
                     columns.extend(items.iter().map(|i| ApplyColumn {
                         path: vec![i.alias.clone()],
@@ -161,6 +164,31 @@ pub enum Transformation {
     OrderBy(Vec<OrderItem>),
     Top(u64),
     Skip(u64),
+    /// `topcount` and its relatives. Keeps rows by the size of `value`.
+    Rank {
+        kind: RankKind,
+        top: bool,
+        amount: Expr,
+        value: Expr,
+    },
+    /// Runs each pipeline on the same input and appends the results.
+    Concat {
+        branches: Vec<Vec<Transformation>>,
+        columns: Vec<ApplyColumn>,
+    },
+    /// `join` and `outerjoin`: one row per related entity, reachable through `alias`.
+    Join {
+        path: Path,
+        alias: String,
+        outer: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RankKind {
+    Count,
+    Sum,
+    Percent,
 }
 
 #[derive(Clone, Debug, PartialEq)]

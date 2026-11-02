@@ -374,6 +374,87 @@ async fn aggregates_respect_protection(app: App) {
     for uri in hidden {
         assert_eq!(user.status(uri).await, 403, "{uri}");
     }
+    let hidden = [
+        "Secrets?$apply=orderby(Salary)/top(1)",
+        "Secrets?$apply=topcount(1,Salary)",
+        "Secrets?$apply=topsum(1,Salary)",
+        "Secrets?$apply=concat(filter(Salary gt 1),identity)",
+        "Secrets?$apply=concat(identity,aggregate(Salary with sum as T))",
+        "Secrets?$apply=aggregate(Salary with sum from Tenant with max as T)",
+        "Secrets?$apply=groupby((rollup($all,Salary)),aggregate($count as N))",
+    ];
+    for uri in hidden {
+        assert_eq!(user.status(uri).await, 403, "{uri}");
+    }
+    let doc = user
+        .ok("Secrets?$apply=concat(identity,aggregate($count as N))")
+        .await;
+    let rows = doc["value"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "one permitted row and the count: {doc}");
+    assert_eq!(rows[0]["Id"], 1);
+    assert!(rows[0]["Salary"].is_null(), "{doc}");
+    assert_eq!(rows[1]["N"], 1);
+    for uri in [
+        "Secrets?$apply=top(9)",
+        "Secrets?$apply=skip(0)",
+        "Secrets?$apply=orderby(Id desc)/top(9)",
+        "Secrets?$apply=topcount(9,Level)",
+        "Secrets?$apply=topsum(999,Level)",
+        "Secrets?$apply=bottompercent(100,Level)",
+    ] {
+        let doc = user.ok(uri).await;
+        let ids: Vec<_> = doc["value"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| &r["Id"])
+            .collect();
+        assert_eq!(ids, [&json!(1)], "{uri}");
+    }
+    assert_eq!(
+        app.status("Secrets?$apply=top(9)").await,
+        403,
+        "a missing claim denies narrowing too"
+    );
+    let joined = "Holders?$apply=join(Secrets as S)/aggregate($count as N)";
+    assert_eq!(
+        app.status(joined).await,
+        403,
+        "a missing claim denies joins"
+    );
+    assert_eq!(
+        user.ok(joined).await["value"][0]["N"],
+        1,
+        "a join sees permitted rows only"
+    );
+    let outer = "Holders?$apply=outerjoin(Secrets as S)/aggregate($count as N)";
+    assert_eq!(
+        user.ok(outer).await["value"][0]["N"],
+        4,
+        "rows out of reach look like missing relations"
+    );
+    let counted = "Holders?$apply=aggregate(Secrets/$count as N)";
+    assert_eq!(user.ok(counted).await["value"][0]["N"], 1);
+    for uri in [
+        "Holders?$apply=join(Audit as A)/aggregate($count as N)",
+        "Holders?$apply=outerjoin(Audit as A)/aggregate($count as N)",
+        "Holders?$apply=join(Archived as A)/aggregate($count as N)",
+        "Holders?$apply=aggregate(Audit/$count as N)",
+        "Holders?$apply=aggregate(Archived/$count as N)",
+        "Holders?$apply=join(Secrets as S)/filter(S/Salary gt 1)/aggregate($count as N)",
+        "Holders?$apply=join(Secrets as S)/groupby((S/Salary))",
+    ] {
+        assert_eq!(user.status(uri).await, 403, "{uri}");
+    }
+    let admin = as_user(&app, acme().with_group("admin"));
+    assert_eq!(
+        admin
+            .ok("Holders?$apply=join(Audit as A)/aggregate($count as N)")
+            .await["value"][0]["N"],
+        1,
+        "the group opens the navigation, not the rows"
+    );
+
     let hr = as_user(&app, acme().with_group("hr"));
     let doc = hr
         .ok("Secrets?$apply=aggregate(Salary with sum as T)")

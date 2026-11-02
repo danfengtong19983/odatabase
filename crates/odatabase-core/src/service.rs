@@ -4,7 +4,7 @@ use crate::paging::{OffsetPaging, PagingProvider};
 use crate::transient::TransientCalculator;
 use crate::{ODataError, ODataRequest, ODataResponse};
 use http::Method;
-use odatabase_edm::{Annotation, EdmEntity, Model, ModelBuilder, ModelError};
+use odatabase_edm::{Annotation, AnnotationValue, EdmEntity, Model, ModelBuilder, ModelError};
 use odatabase_sql::{Database, ExpandLimits, QueryExtension};
 use odatabase_uri::Limits;
 use std::collections::HashMap;
@@ -223,7 +223,23 @@ impl ServiceBuilder {
 
     /// Validates the model and binds it to `database`.
     pub fn build(self, database: impl Into<Database>) -> Result<Service, ModelError> {
-        let model = self.model.build()?;
+        let mut model = self.model.build()?;
+        let transformations = odatabase_uri::APPLY_TRANSFORMATIONS
+            .iter()
+            .map(|t| AnnotationValue::String((*t).to_owned()))
+            .collect();
+        let supported = Annotation::new(
+            "Aggregation.ApplySupported",
+            AnnotationValue::Record(vec![(
+                "Transformations".to_owned(),
+                AnnotationValue::Collection(transformations),
+            )]),
+        );
+        for set in model.entity_sets.values_mut() {
+            if !set.annotations.iter().any(|a| a.term == supported.term) {
+                set.annotations.push(supported.clone());
+            }
+        }
         for t in model.entity_types.values() {
             if t.query_extension && !self.extensions.contains_key(&t.name) {
                 return Err(ModelError(format!(

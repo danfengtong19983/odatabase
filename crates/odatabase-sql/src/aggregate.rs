@@ -5,22 +5,34 @@ use crate::filter::{Frame, FrameKind, Translator, col};
 use crate::query::{Page, sort_direction, source};
 use crate::record::Record;
 use crate::search::search_condition;
-use crate::{QueryContext, QueryError, Session};
+use crate::{Dialect, QueryContext, QueryError, Session};
 use odatabase_edm::{PrimitiveKind, Value};
 use odatabase_uri::{
-    AggregateMethod, Aggregation, Expr as UExpr, ExprType, GroupKey, OrderItem, QueryOptions,
-    Segment, SelectItem, Transformation,
+    AggregateMethod, Aggregation, ApplyColumn, ComputeItem, Expr as UExpr, ExprType, GroupKey,
+    OrderItem, Path, PathRoot, QueryOptions, RankKind, Segment, SelectItem, Step, Transformation,
 };
-use sea_query::{Alias, Asterisk, Expr, ExprTrait, Query, SelectStatement};
+use sea_query::{
+    Alias, Asterisk, Expr, ExprTrait, Order, Query, SelectStatement, UnionType, WindowStatement,
+};
 
 #[derive(Clone, Debug)]
 struct Column {
     path: Vec<String>,
     alias: String,
     ty: ExprType,
+    /// Ordering information of `concat`, kept out of the result.
+    hidden: bool,
+}
+
+/// The fixed inputs of one pipeline.
+#[derive(Clone, Copy)]
+struct Input<'r> {
+    segments: &'r [Segment],
+    type_name: &'r str,
 }
 
 /// The statement of a pipeline so far.
+#[derive(Clone)]
 struct Stage {
     sel: SelectStatement,
     frame: Frame,
@@ -31,6 +43,10 @@ struct Stage {
     window: Option<(u64, Option<u64>)>,
     /// The latest `orderby`, which also orders the final result.
     order: Vec<OrderItem>,
+    /// `compute` steps on entities, which are renewed when the frame changes.
+    computed: Vec<ComputeItem>,
+    /// `join` was used, so the rows are no longer identified by the entity key.
+    joined: bool,
 }
 
 /// How a column of type `ty` is read.
@@ -67,7 +83,35 @@ fn wrap(
     (outer, frame)
 }
 
+fn key_exprs(tr: &Translator<'_>, frame: &Frame, type_name: &str) -> Result<Vec<Expr>, QueryError> {
+    let model = tr.ctx.model;
+    model
+        .key_of(type_name)
+        .iter()
+        .map(|k| {
+            let p = model
+                .property(type_name, k)
+                .ok_or_else(|| QueryError::internal(format!("unknown key {k}")))?;
+            tr.scalar(frame, p)
+        })
+        .collect()
+}
+
 impl Stage {
+    fn start(tr: &mut Translator<'_>, input: Input<'_>) -> Result<Self, QueryError> {
+        let mut sel = Query::select();
+        let frame = source(tr, &mut sel, input.segments, input.type_name)?;
+        Ok(Self {
+            sel,
+            frame,
+            columns: None,
+            window: None,
+            order: Vec::new(),
+            computed: Vec::new(),
+            joined: false,
+        })
+    }
+
     /// Starts a new derived table when the rows are already aggregated.
     fn open(&mut self, tr: &mut Translator<'_>) {
         if let Some(columns) = &self.columns {
@@ -78,14 +122,57 @@ impl Stage {
         }
     }
 
-    /// Entities cannot be wrapped, so steps that must follow `top` or `skip` are refused.
-    fn refuse_after_window(&self, step: &str) -> Result<(), QueryError> {
-        if self.columns.is_none() && self.window.is_some() {
-            return Err(QueryError::not_implemented(format!(
-                "{step} after top or skip on entities"
-            )));
+    /// Replaces the statement with a fresh one over the rows whose keys `keys` selects.
+    fn restart_with_keys(
+        &mut self,
+        tr: &mut Translator<'_>,
+        input: Input<'_>,
+        keys: SelectStatement,
+    ) -> Result<(), QueryError> {
+        let mut sel = Query::select();
+        let frame = source(tr, &mut sel, input.segments, input.type_name)?;
+        let own = key_exprs(tr, &frame, input.type_name)?;
+        sel.and_where(Expr::tuple(own).in_subquery(keys));
+        self.sel = sel;
+        self.frame = frame;
+        self.window = None;
+        let items = self.computed.clone();
+        let names: Vec<&str> = items.iter().map(|i| i.alias.as_str()).collect();
+        tr.computed.retain(|(n, _)| !names.contains(&n.as_str()));
+        for item in &items {
+            let e = tr.expr(&self.frame, &item.expr)?;
+            tr.computed.push((item.alias.clone(), e));
         }
         Ok(())
+    }
+
+    /// Lets later steps act on the result of `top` or `skip` on entities.
+    fn settle(&mut self, tr: &mut Translator<'_>, input: Input<'_>) -> Result<(), QueryError> {
+        if self.columns.is_some() || self.window.is_none() {
+            return Ok(());
+        }
+        if self.joined {
+            return Err(QueryError::not_implemented(
+                "a step after top or skip on joined rows",
+            ));
+        }
+        let keys = self.keys_statement(tr, input)?;
+        self.restart_with_keys(tr, input, keys)
+    }
+
+    /// The current rows, reduced to their entity keys.
+    fn keys_statement(
+        &mut self,
+        tr: &Translator<'_>,
+        input: Input<'_>,
+    ) -> Result<SelectStatement, QueryError> {
+        let keys = key_exprs(tr, &self.frame, input.type_name)?;
+        let mut sel = self.sel.take();
+        sel.clear_selects();
+        for key in keys {
+            sel.expr(key);
+        }
+        Ok(sel)
     }
 
     fn narrow(&mut self, skip: u64, top: Option<u64>) {
@@ -154,6 +241,7 @@ impl Stage {
                 path: key.path.clone(),
                 alias,
                 ty: key.ty.clone(),
+                hidden: false,
             });
         }
         for (item, input) in aggregates.iter().zip(&measures) {
@@ -167,17 +255,301 @@ impl Stage {
                 (AggregateMethod::CountDistinct, Some(i)) => col(&derived, i).count_distinct(),
             };
             outer.expr_as(e, Alias::new(alias.as_str()));
+            let path = vec![item.alias.clone()];
             columns.push(Column {
-                path: vec![item.alias.clone()],
+                path,
                 alias,
                 ty: item.ty.clone(),
+                hidden: false,
             });
         }
         self.sel = outer;
         self.columns = Some(columns);
         self.window = None;
         self.order.clear();
+        self.computed.clear();
+        tr.computed.clear();
         Ok(())
+    }
+
+    /// Expressions that make an order total, so that ties cannot change the rows kept.
+    fn tie_breakers(&self, tr: &Translator<'_>, input: Input<'_>) -> Result<Vec<Expr>, QueryError> {
+        match &self.columns {
+            Some(columns) => Ok(columns
+                .iter()
+                .map(|c| col(&self.frame.alias, &c.alias))
+                .collect()),
+            None => key_exprs(tr, &self.frame, input.type_name),
+        }
+    }
+
+    /// Gives `top` and `skip` a defined order when the pipeline has none.
+    fn stabilize(&mut self, tr: &mut Translator<'_>, input: Input<'_>) -> Result<(), QueryError> {
+        if self.window.is_some() || !self.order.is_empty() {
+            return Ok(());
+        }
+        self.open(tr);
+        for tie in self.tie_breakers(tr, input)? {
+            let (direction, nulls) = sort_direction(false);
+            self.sel.order_by_expr_with_nulls(tie, direction, nulls);
+        }
+        Ok(())
+    }
+
+    fn rank(
+        &mut self,
+        tr: &mut Translator<'_>,
+        input: Input<'_>,
+        kind: RankKind,
+        top: bool,
+        amount: &UExpr,
+        value: &UExpr,
+    ) -> Result<(), QueryError> {
+        self.settle(tr, input)?;
+        self.open(tr);
+        let (direction, nulls) = sort_direction(top);
+        let measured = tr.expr(&self.frame, value)?;
+        let ties = self.tie_breakers(tr, input)?;
+        self.order = vec![OrderItem {
+            expr: value.clone(),
+            descending: top,
+        }];
+        if kind == RankKind::Count {
+            let UExpr::Literal(n) = amount else {
+                return Err(QueryError::internal("topcount needs a literal"));
+            };
+            self.sel.and_where(measured.clone().is_not_null());
+            self.sel
+                .order_by_expr_with_nulls(measured, direction, nulls);
+            for tie in ties {
+                let (direction, nulls) = sort_direction(false);
+                self.sel.order_by_expr_with_nulls(tie, direction, nulls);
+            }
+            self.narrow(0, Some(n.as_i64().unwrap_or(0) as u64));
+            return Ok(());
+        }
+        let mut inner = self.sel.take();
+        inner.and_where(measured.clone().is_not_null());
+        let keys = match self.columns {
+            Some(_) => Vec::new(),
+            None => key_exprs(tr, &self.frame, input.type_name)?,
+        };
+        if self.columns.is_none() {
+            inner.clear_selects();
+            for (i, key) in keys.iter().enumerate() {
+                inner.expr_as(key.clone(), Alias::new(format!("k{i}")));
+            }
+        }
+        let mut running = WindowStatement::new();
+        running.order_by_expr_with_nulls(measured.clone(), direction, nulls);
+        for tie in ties {
+            let (direction, nulls) = sort_direction(false);
+            running.order_by_expr_with_nulls(tie, direction, nulls);
+        }
+        inner.expr_as(measured.clone(), Alias::new("rv"));
+        inner.expr_window_as(measured.clone().sum(), running, Alias::new("rc"));
+        inner.expr_window_as(measured.sum(), WindowStatement::new(), Alias::new("rt"));
+        let limit = tr.literal_of(amount)?;
+        let alias = tr.alias();
+        let mut outer = Query::select();
+        outer.from_subquery(inner, Alias::new(alias.as_str()));
+        match &self.columns {
+            Some(columns) => {
+                for c in columns {
+                    outer.expr_as(col(&alias, &c.alias), Alias::new(c.alias.as_str()));
+                }
+            }
+            None => {
+                for i in 0..keys.len() {
+                    outer.expr(col(&alias, &format!("k{i}")));
+                }
+            }
+        }
+        let before = col(&alias, "rc").sub(col(&alias, "rv"));
+        outer.and_where(match kind {
+            RankKind::Sum => before.lt(limit),
+            _ => before.mul(100).lt(limit.mul(col(&alias, "rt"))),
+        });
+        if self.columns.is_some() {
+            self.sel = outer;
+            return Ok(());
+        }
+        self.restart_with_keys(tr, input, outer)
+    }
+
+    fn join(
+        &mut self,
+        tr: &mut Translator<'_>,
+        path: &Path,
+        name: &str,
+        outer: bool,
+    ) -> Result<(), QueryError> {
+        let mut current = tr.root_frame(&self.frame, &path.root)?;
+        for step in &path.steps {
+            let Step::Navigation(nav) = step else {
+                return Err(QueryError::internal("join follows navigation only"));
+            };
+            current = tr.join_navigation(&mut self.sel, &current, nav, outer)?;
+        }
+        tr.bind(name, current);
+        self.joined = true;
+        Ok(())
+    }
+
+    fn concat(
+        &mut self,
+        tr: &mut Translator<'_>,
+        input: Input<'_>,
+        branches: &[Vec<Transformation>],
+        columns: &[ApplyColumn],
+    ) -> Result<(), QueryError> {
+        self.settle(tr, input)?;
+        let targets: Vec<Column> = columns
+            .iter()
+            .enumerate()
+            .map(|(i, c)| Column {
+                path: c.path.clone(),
+                alias: format!("x{i}"),
+                ty: c.ty.clone(),
+                hidden: false,
+            })
+            .collect();
+        let computed = tr.computed.clone();
+        let mut union: Option<SelectStatement> = None;
+        for (index, steps) in branches.iter().enumerate() {
+            tr.computed = computed.clone();
+            let mut arm = self.clone();
+            arm.order.clear();
+            run(tr, &mut arm, steps, input)?;
+            let selected = arm.arm_statement(tr, input, index, &targets)?;
+            match &mut union {
+                Some(first) => {
+                    first.union(UnionType::All, selected);
+                }
+                None => union = Some(selected),
+            }
+        }
+        tr.computed.clear();
+        self.sel = union.ok_or_else(|| QueryError::internal("concat without branches"))?;
+        let mut columns = targets;
+        for name in ["sb", "sr"] {
+            columns.push(Column {
+                path: vec![format!("\u{1}{name}")],
+                alias: name.to_owned(),
+                ty: ExprType::Primitive(PrimitiveKind::Int64),
+                hidden: true,
+            });
+        }
+        self.columns = Some(columns);
+        self.window = None;
+        self.order.clear();
+        self.computed.clear();
+        self.joined = false;
+        Ok(())
+    }
+
+    /// One arm of `concat`, with every target column and a position in the result.
+    fn arm_statement(
+        mut self,
+        tr: &mut Translator<'_>,
+        input: Input<'_>,
+        index: usize,
+        targets: &[Column],
+    ) -> Result<SelectStatement, QueryError> {
+        if self.columns.is_none() {
+            self.settle(tr, input)?;
+            self.project_entities(tr, targets)?;
+        }
+        let mut order = self.order.clone();
+        let columns = self.columns.take().unwrap_or_default();
+        let (inner, frame) = wrap(tr, self.sel.take(), &columns);
+        let alias = tr.alias();
+        let mut q = Query::select();
+        q.from_subquery(inner, Alias::new(alias.as_str()));
+        for target in targets {
+            let e = match columns.iter().find(|c| c.path == target.path && !c.hidden) {
+                Some(c) => col(&alias, &c.alias),
+                None => typed_null(tr, &target.ty),
+            };
+            q.expr_as(e, Alias::new(target.alias.as_str()));
+        }
+        q.expr_as(Expr::cust(index.to_string()), Alias::new("sb"));
+        let mut position = WindowStatement::new();
+        let outer_frame = Frame {
+            alias: alias.clone(),
+            ..frame
+        };
+        for item in order.drain(..) {
+            let (direction, nulls) = sort_direction(item.descending);
+            position.order_by_expr_with_nulls(tr.expr(&outer_frame, &item.expr)?, direction, nulls);
+        }
+        for c in columns.iter().filter(|c| !c.hidden) {
+            let (direction, nulls) = sort_direction(false);
+            position.order_by_expr_with_nulls(col(&alias, &c.alias), direction, nulls);
+        }
+        q.expr_window_as(Expr::cust("ROW_NUMBER()"), position, Alias::new("sr"));
+        Ok(q)
+    }
+
+    /// Turns entities into the named columns `concat` needs.
+    fn project_entities(
+        &mut self,
+        tr: &mut Translator<'_>,
+        targets: &[Column],
+    ) -> Result<(), QueryError> {
+        self.sel.clear_selects();
+        let mut columns = Vec::new();
+        for target in targets {
+            let frame = self.frame.clone();
+            let path = UExpr::Path(Path {
+                root: PathRoot::It,
+                steps: target.path.iter().cloned().map(Step::Property).collect(),
+                ty: target.ty.clone(),
+            });
+            let computed =
+                target.path.len() == 1 && self.computed.iter().any(|i| i.alias == target.path[0]);
+            let looked_up = if computed {
+                tr.expr(
+                    &frame,
+                    &UExpr::Computed(target.path[0].clone(), target.ty.clone()),
+                )
+            } else {
+                tr.expr(&frame, &path)
+            };
+            // Columns only another arm has, and properties hidden from the caller, stay out.
+            let Ok(value) = looked_up else {
+                continue;
+            };
+            self.sel.expr_as(value, Alias::new(target.alias.as_str()));
+            columns.push(target.clone());
+        }
+        self.columns = Some(columns);
+        Ok(())
+    }
+}
+
+/// A null that unions with a column of type `ty`.
+fn typed_null(tr: &Translator<'_>, ty: &ExprType) -> Expr {
+    let dialect = tr.ctx.dialect;
+    let name = match ty {
+        ExprType::Primitive(k) => dialect.cast_type(*k),
+        ExprType::Enum(n) => {
+            let text = tr
+                .ctx
+                .model
+                .enum_type(n)
+                .is_some_and(|e| e.stored_as_string);
+            dialect.cast_type(if text {
+                PrimitiveKind::String
+            } else {
+                PrimitiveKind::Int64
+            })
+        }
+        _ => None,
+    };
+    match (dialect, name) {
+        (Dialect::Postgres, Some(name)) => Expr::cust(format!("CAST(NULL AS {name})")),
+        _ => Expr::cust("NULL"),
     }
 }
 
@@ -194,46 +566,33 @@ fn order(
     Ok(())
 }
 
-struct Pipeline {
-    sel: SelectStatement,
-    columns: Vec<Column>,
-    order: Vec<OrderItem>,
-}
-
-fn pipeline(
+fn run(
     tr: &mut Translator<'_>,
-    segments: &[Segment],
-    type_name: &str,
-    options: &QueryOptions,
-) -> Result<Pipeline, QueryError> {
-    let mut sel = Query::select();
-    let frame = source(tr, &mut sel, segments, type_name)?;
-    let mut stage = Stage {
-        sel,
-        frame,
-        columns: None,
-        window: None,
-        order: Vec::new(),
-    };
-    for t in &options.apply {
+    stage: &mut Stage,
+    steps: &[Transformation],
+    input: Input<'_>,
+) -> Result<(), QueryError> {
+    for t in steps {
         match t {
             Transformation::Identity => {}
             Transformation::Filter(e) => {
-                stage.refuse_after_window("filter")?;
+                stage.settle(tr, input)?;
                 stage.open(tr);
                 let condition = tr.condition(&stage.frame, e)?;
                 stage.sel.and_where(condition);
             }
             Transformation::Search(s) => {
-                stage.refuse_after_window("search")?;
-                let condition = search_condition(tr, &stage.frame, type_name, s)?;
+                stage.settle(tr, input)?;
+                let condition = search_condition(tr, &stage.frame, input.type_name, s)?;
                 stage.sel.and_where(condition);
             }
             Transformation::Compute(items) => {
+                stage.settle(tr, input)?;
                 if stage.columns.is_none() {
                     for item in items {
                         let e = tr.expr(&stage.frame, &item.expr)?;
                         tr.computed.push((item.alias.clone(), e));
+                        stage.computed.push(item.clone());
                     }
                     continue;
                 }
@@ -247,6 +606,7 @@ fn pipeline(
                         path: vec![item.alias.clone()],
                         alias,
                         ty: item.ty.clone(),
+                        hidden: false,
                     });
                 }
             }
@@ -255,24 +615,90 @@ fn pipeline(
                 stage.aggregate(tr, keys, aggregates)?
             }
             Transformation::OrderBy(items) => {
-                stage.refuse_after_window("orderby")?;
+                stage.settle(tr, input)?;
                 stage.open(tr);
                 let frame = stage.frame.clone();
                 order(tr, &mut stage.sel, &frame, items)?;
+                let ties = stage.tie_breakers(tr, input)?;
+                for tie in ties {
+                    let (direction, nulls) = sort_direction(false);
+                    stage.sel.order_by_expr_with_nulls(tie, direction, nulls);
+                }
                 stage.order = items.clone();
             }
-            Transformation::Top(n) => stage.narrow(0, Some(*n)),
-            Transformation::Skip(n) => stage.narrow(*n, None),
+            Transformation::Top(n) => {
+                stage.stabilize(tr, input)?;
+                stage.narrow(0, Some(*n));
+            }
+            Transformation::Skip(n) => {
+                stage.stabilize(tr, input)?;
+                stage.narrow(*n, None);
+            }
+            Transformation::Rank {
+                kind,
+                top,
+                amount,
+                value,
+            } => {
+                stage.rank(tr, input, *kind, *top, amount, value)?;
+            }
+            Transformation::Concat { branches, columns } => {
+                stage.concat(tr, input, branches, columns)?;
+            }
+            Transformation::Join { path, alias, outer } => stage.join(tr, path, alias, *outer)?,
         }
     }
-    let columns = stage
-        .columns
-        .ok_or_else(|| QueryError::internal("the pipeline does not aggregate"))?;
-    Ok(Pipeline {
-        sel: stage.sel,
-        columns,
-        order: stage.order,
-    })
+    Ok(())
+}
+
+/// The keys of the entities a pipeline without aggregation leaves.
+pub fn pipeline_keys(
+    tr: &mut Translator<'_>,
+    segments: &[Segment],
+    type_name: &str,
+    options: &QueryOptions,
+) -> Result<SelectStatement, QueryError> {
+    let input = Input {
+        segments,
+        type_name,
+    };
+    let mut stage = Stage::start(tr, input)?;
+    run(tr, &mut stage, &options.apply, input)?;
+    let keys = stage.keys_statement(tr, input)?;
+    tr.computed.clear();
+    Ok(keys)
+}
+
+/// Whether a pipeline that keeps entities needs [`pipeline_keys`] to find them.
+pub fn narrows_entities(options: &QueryOptions) -> bool {
+    !options.is_aggregated()
+        && options.apply.iter().any(|t| {
+            matches!(
+                t,
+                Transformation::OrderBy(_)
+                    | Transformation::Top(_)
+                    | Transformation::Skip(_)
+                    | Transformation::Rank { .. }
+            )
+        })
+}
+
+/// The order the last sorting step of a pipeline leaves.
+pub fn pipeline_order(options: &QueryOptions) -> Vec<OrderItem> {
+    let mut items = Vec::new();
+    for t in &options.apply {
+        match t {
+            Transformation::OrderBy(list) => items = list.clone(),
+            Transformation::Rank { top, value, .. } => {
+                items = vec![OrderItem {
+                    expr: value.clone(),
+                    descending: *top,
+                }];
+            }
+            _ => {}
+        }
+    }
+    items
 }
 
 struct ResultQuery {
@@ -289,12 +715,16 @@ fn result_query(
     type_name: &str,
     options: &QueryOptions,
 ) -> Result<ResultQuery, QueryError> {
-    let Pipeline {
-        sel,
-        columns,
-        order,
-    } = pipeline(tr, segments, type_name, options)?;
-    let (mut outer, frame) = wrap(tr, sel, &columns);
+    let input = Input {
+        segments,
+        type_name,
+    };
+    let mut stage = Stage::start(tr, input)?;
+    run(tr, &mut stage, &options.apply, input)?;
+    let columns = stage
+        .columns
+        .ok_or_else(|| QueryError::internal("the pipeline does not aggregate"))?;
+    let (mut outer, frame) = wrap(tr, stage.sel, &columns);
     if let Some(f) = &options.filter {
         let condition = tr.condition(&frame, f)?;
         outer.and_where(condition);
@@ -303,7 +733,7 @@ fn result_query(
         sel: outer,
         frame,
         columns,
-        order,
+        order: stage.order,
     })
 }
 
@@ -329,8 +759,11 @@ pub async fn read_aggregated(
         &options.orderby
     };
     order(&mut tr, &mut sel, &frame, requested)?;
-    // Every column together identifies a row, which keeps paging stable.
-    for c in &columns {
+    // The position from `concat` comes first, then every column, which keeps paging stable.
+    for c in columns.iter().filter(|c| c.hidden) {
+        sel.order_by_expr(col(&frame.alias, &c.alias), Order::Asc);
+    }
+    for c in columns.iter().filter(|c| !c.hidden) {
         let (direction, nulls) = sort_direction(false);
         sel.order_by_expr_with_nulls(col(&frame.alias, &c.alias), direction, nulls);
     }
@@ -345,12 +778,15 @@ pub async fn read_aggregated(
     }
     let decoders: Vec<ColumnDecode> = columns.iter().map(|c| decode_for(&c.ty)).collect();
     let rows = session.fetch(ctx.model, &sel, &decoders).await?;
-    let selected = |c: &Column| match &options.select {
-        None => true,
-        Some(items) => items.iter().any(|i| match i {
-            SelectItem::Star => true,
-            SelectItem::Path(p) => c.path.starts_with(p),
-        }),
+    let selected = |c: &Column| {
+        !c.hidden
+            && match &options.select {
+                None => true,
+                Some(items) => items.iter().any(|i| match i {
+                    SelectItem::Star => true,
+                    SelectItem::Path(p) => c.path.starts_with(p),
+                }),
+            }
     };
     Ok(rows
         .into_iter()
