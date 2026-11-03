@@ -414,12 +414,17 @@ fn expand() {
     assert_eq!(ok("Partners", "$expand=*").options.expand.len(), 1);
     assert!(ok("Partners", "$expand=Roles/$ref").options.expand[0].ref_only);
     assert_eq!(
-        ok("Roles", "$expand=Partner($levels=2)").options.expand[0].levels,
+        ok("Roles", "$expand=*($levels=2)").options.expand[0].levels,
         Some(Levels::Number(2))
     );
     assert_eq!(
-        ok("Roles", "$expand=Partner($levels=max)").options.expand[0].levels,
+        ok("Roles", "$expand=*($levels=max)").options.expand[0].levels,
         Some(Levels::Max)
+    );
+    assert_eq!(
+        fail("Roles", "$expand=Partner($levels=2)").status,
+        400,
+        "Partner doesn't lead back to its own type"
     );
     assert_eq!(fail("Partners", "$expand=Nope").status, 400);
     assert_eq!(fail("Roles", "$expand=Partner($top=1)").status, 400);

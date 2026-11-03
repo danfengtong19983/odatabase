@@ -55,9 +55,9 @@ upper camel case (`FirstName`). Set `name` or `column` to override either.
 | Metadata | CSDL XML and JSON, service document, `$metadata` ETag, annotations and vocabularies |
 | Model | Complex types, enums and flags, collection properties, singletons, single-table and joined inheritance, media streams, geospatial properties (stored as GeoJSON) |
 | Mapped properties | Language-dependent descriptions, transient properties with calculators |
-| Reads | Key and navigation paths, `$filter` with lambdas and built-in functions, `$select`, `$orderby`, `$top`, `$skip`, `$count`, `$search`, `$compute`, `$ref`, `$value`, `$entity`, casts, date and duration arithmetic |
+| Reads | Key and navigation paths, `$filter` with lambdas and built-in functions, `$select`, `$orderby`, `$top`, `$skip`, `$count`, `$search`, `$compute`, `$schemaversion`, `$ref`, `$value`, `$entity`, `$all`, `$crossjoin`, casts, date and duration arithmetic, the same options on collection properties and inside `$select` |
 | `$apply` | `aggregate`, `groupby` (with `rollup` and `$all`), `filter`, `search`, `compute`, `orderby`, `top`, `skip`, `identity`, `concat`, `join`, `outerjoin`, `expand`, and the `topcount`, `topsum`, `toppercent` family with its `bottom` forms, in pipelines, with `sum`, `min`, `max`, `average`, `countdistinct` and `$count` |
-| `$expand` | Nested options, per-parent `$top` and `$skip`, `$levels`, `/$count`, `/$ref`, `*`, join tables |
+| `$expand` | Nested options, per-parent `$top` and `$skip`, `$compute` and `$apply`, `$levels`, `/$count`, `/$ref`, `*`, join tables |
 | Writes | POST, PATCH, PUT, DELETE, upsert, property and `$value` updates, deep insert, deep update, `@odata.bind`, `$ref` links, ETag preconditions, `Prefer: return` |
 | Delta | `Prefer: odata.track-changes`, `@odata.deltaLink`, removed entries, `Nav@delta`, `PATCH` on a collection |
 | `$batch` | Multipart and JSON formats, atomic change sets, `Content-ID` references, `continue-on-error` |
@@ -182,10 +182,11 @@ These return a status rather than a wrong result:
 
 | Feature | Response |
 |---|---|
-| `$all`, `$crossjoin`, async requests, `$compute` inside `$expand` | 501 |
+| Async requests | 501 |
 | In `$apply`: `nest`, `ancestors`, `descendants`, `traverse`, custom aggregates, `from` with more than one level, `join` on anything but navigation | 501 |
 | `join` with no later aggregation, and `expand` before an aggregation or inside `concat` | 501 |
-| `$expand` or `$search` after an aggregation, and anything but `filter` and `search` in `$apply` inside `$expand` | 501 |
+| `$expand` after an aggregation inside `$expand` | 501 |
+| `$filter` and `$orderby` on values a handler returned, as opposed to entities | 501 |
 | `geo.*` and `hassubset` in `$filter` | 501 |
 | Navigation properties inside complex types | 501 |
 | Entity-typed operation parameters | 501 |
@@ -197,6 +198,14 @@ These return a status rather than a wrong result:
 Each entity set announces its transformations through `Aggregation.ApplySupported`. A `concat` arm
 that keeps entities leaves properties the caller can't see empty, and a filter required by
 `FilterRestrictions` must hold in every arm.
+
+A `$apply` inside `$expand` that aggregates or narrows runs one query per parent, so its cost grows
+with the page size. `$expand` after an aggregation needs the target's key among the `groupby`
+properties. `$search` after an aggregation looks in the string columns of the result. `$all` leaves
+out sets the query doesn't fit or the caller can't read, and only fails if none is left.
+`$crossjoin` has no limit of its own on the size of the product: it relies on paging and on
+`statement_timeout`. `POST` to a collection property adds an item, and `$index` picks its place in
+an ordered collection, with -1 for the end.
 
 `$levels=max` stops at `ExpandLimits::max_levels`, 8 by default. `$expand` has no server-driven
 paging, and `PagingProvider` applies to top-level collections only. Transient properties work

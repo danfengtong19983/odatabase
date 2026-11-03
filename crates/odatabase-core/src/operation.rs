@@ -13,7 +13,7 @@ use odatabase_edm::{
     OperationTypeKind, Parameter, Property, TypeKind, Value,
 };
 use odatabase_sql::{Claims, ColumnDecode, Session, call_scalar, literal_args, lock_row};
-use odatabase_uri::{Expr, ODataUri, QueryOptions, Segment, Target};
+use odatabase_uri::{Expr, ODataUri, Segment, Target};
 use serde_json::{Map, Value as Json};
 use std::sync::Arc;
 
@@ -407,7 +407,19 @@ impl Service {
                         context(format!("Collection({t})")).into(),
                     );
                 }
-                body.insert("value".into(), values.iter().map(|v| w.value(v)).collect());
+                let o = &uri.options;
+                if o.filter.is_some() || !o.orderby.is_empty() {
+                    return Err(ODataError::not_implemented(
+                        "$filter and $orderby on values from a handler",
+                    ));
+                }
+                if metadata && o.count {
+                    body.insert("@odata.count".into(), values.len().into());
+                }
+                let skip = o.skip.unwrap_or(0) as usize;
+                let top = o.top.map_or(usize::MAX, |n| n as usize);
+                let window = values.iter().skip(skip).take(top);
+                body.insert("value".into(), window.map(|v| w.value(v)).collect());
             }
             OperationResult::Json(json) => match json {
                 Json::Object(o) => {
@@ -459,24 +471,28 @@ impl Service {
             ));
         };
         let o = &uri.options;
-        if o.filter.is_some() || !o.orderby.is_empty() || o.top.is_some() || o.skip.is_some() {
-            return Err(ODataError::not_implemented(
-                "query options on the result of a handler operation",
-            ));
+        let set = crate::url::set_of(&self.inner.model, t)
+            .ok_or_else(|| ODataError::not_implemented("entities without an entity set"))?;
+        // The keys become a filter, so that every option of a normal read applies to them.
+        let mut options = o.clone();
+        options.top = None;
+        options.skip = None;
+        options.count = false;
+        let mut records = self
+            .entities_with_keys(req, session, set, t, &options, &keys)
+            .await?;
+        if o.orderby.is_empty() {
+            let position = |r: &odatabase_sql::Record| {
+                let text = crate::url::key_predicate(&self.inner.model, t, r);
+                keys.iter()
+                    .position(|k| Some(crate::url::key_text(k)) == text)
+            };
+            records.sort_by_key(position);
         }
-        let options = QueryOptions {
-            select: o.select.clone(),
-            expand: o.expand.clone(),
-            ..QueryOptions::default()
-        };
-        let mut records = Vec::with_capacity(keys.len());
-        for key in keys {
-            let segs = [Segment::Key {
-                values: key,
-                target: Target::Entity(t.clone()),
-            }];
-            records.extend(self.read_one(req, session, &segs, t, &options).await?);
-        }
+        let total = records.len();
+        let skip = o.skip.unwrap_or(0) as usize;
+        let top = o.top.map_or(usize::MAX, |n| n as usize);
+        let records: Vec<_> = records.into_iter().skip(skip).take(top).collect();
         if !ret.collection {
             let Some(rec) = records.first() else {
                 return Ok(ODataResponse::new(StatusCode::NO_CONTENT));
@@ -499,6 +515,9 @@ impl Service {
                 )
                 .into(),
             );
+            if o.count {
+                body.insert("@odata.count".into(), total.into());
+            }
         }
         let items: Vec<Json> = records
             .iter()

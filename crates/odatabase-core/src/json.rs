@@ -178,7 +178,13 @@ impl Writer<'_> {
             .model
             .navigation(owner, name)
             .map(|n| n.target.as_str());
-        let write = |r: &Record| Json::Object(self.entity(r, declared.unwrap_or(&r.type_name)));
+        let write = |r: &Record| {
+            // Rows of an aggregation have no type of their own.
+            Json::Object(match r.type_name.is_empty() {
+                true => self.aggregated(r, declared.unwrap_or_default()),
+                false => self.entity(r, declared.unwrap_or(&r.type_name)),
+            })
+        };
         match node {
             Node::Entity(Some(r)) => write(r),
             Node::Entities { items, .. } => items.iter().map(write).collect(),

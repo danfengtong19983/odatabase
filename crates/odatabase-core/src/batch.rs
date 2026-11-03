@@ -154,6 +154,9 @@ impl Service {
 
     /// Runs an individual request, in its own transaction if it modifies data.
     async fn run_inner(&self, req: &ODataRequest) -> Result<ODataResponse, ODataError> {
+        if let Some(response) = self.whole_service(req).await {
+            return response;
+        }
         let uri = self.parse_uri(req)?;
         match req.method {
             Method::GET => self.get(req, &uri).await,

@@ -15,8 +15,9 @@ use odatabase_edm::{
     EntityType, Inheritance, Model, NavigationProperty, PrimitiveKind, Property, TypeKind, Value,
 };
 use odatabase_sql::{
-    ChangeKind, ColumnValue, ColumnWrite, Page, ReadRequest, Session, delete as sql_delete,
-    insert as sql_insert, read_columns, read_entities, update as sql_update,
+    ChangeKind, ColumnValue, ColumnWrite, Page, ReadRequest, Session, collection_positions,
+    delete as sql_delete, insert as sql_insert, open_position, read_columns, read_entities,
+    update as sql_update,
 };
 use odatabase_uri::{ExpandItem, ODataUri, QueryOptions, Segment, Target};
 use serde_json::Value as Json;
@@ -275,6 +276,16 @@ impl Service {
         if let Some(t) = changed_type(uri) {
             crate::capabilities::check_write(&self.inner.model, t, &req.method)?;
         }
+        let item_insert = req.method == Method::POST
+            && matches!(
+                uri.target(),
+                Target::PrimitiveCollection(_) | Target::ComplexCollection(_)
+            );
+        if uri.options.index.is_some() && !item_insert {
+            return Err(ODataError::bad_request(
+                "$index needs a POST to a collection property",
+            ));
+        }
         match (&req.method, uri.target()) {
             (&Method::POST, Target::ActionResult) => self.call_action(req, uri, session).await,
             (&Method::PATCH | &Method::PUT | &Method::DELETE, Target::RawValue)
@@ -284,6 +295,9 @@ impl Service {
             }
             (&Method::POST, Target::EntityCollection(t)) => self.create(req, uri, t, session).await,
             (&Method::POST, Target::Ref { .. }) => self.add_link(req, uri, session).await,
+            (&Method::POST, Target::PrimitiveCollection(_) | Target::ComplexCollection(_)) => {
+                self.insert_item(req, uri, session).await
+            }
             (&Method::PATCH, Target::EntityCollection(t)) => {
                 self.patch_collection(req, uri, t, session).await
             }
@@ -841,35 +855,131 @@ impl Service {
             sql_delete(model, session, &c.table, &conditions).await?;
         }
         for (i, item) in items.iter().enumerate() {
-            let mut cols: Vec<ColumnWrite> = c
-                .owner
-                .iter()
-                .zip(&owner_values)
-                .map(|(o, v)| ColumnWrite::new(o.target.clone(), v.clone(), None))
-                .collect();
-            if let Some(order) = &c.order_column {
-                cols.push(ColumnWrite::new(
-                    order.clone(),
-                    Value::Int32(i as i32 + 1),
-                    Some(TypeKind::Primitive(PrimitiveKind::Int32)),
-                ));
-            }
-            match item {
-                PropertyValue::Value(v) => {
-                    let column = c.value_column.clone().unwrap_or_else(|| p.column.clone());
-                    cols.push(ColumnWrite::new(column, v.clone(), Some(p.kind.clone())));
-                }
-                complex => {
-                    let as_entity = Property {
-                        column: String::new(),
-                        ..p.clone()
-                    };
-                    flatten(model, &as_entity, "", complex, true, &mut cols)?;
-                }
-            }
-            sql_insert(model, session, &c.table, &cols, &[]).await?;
+            self.write_item(session, p, &owner_values, item, i as i32 + 1)
+                .await?;
         }
         Ok(())
+    }
+
+    /// Inserts one row of a collection property.
+    async fn write_item(
+        &self,
+        session: &Session,
+        p: &Property,
+        owner_values: &[Value],
+        item: &PropertyValue,
+        position: i32,
+    ) -> Result<(), ODataError> {
+        let model = &self.inner.model;
+        let c = p.collection.as_ref().expect("checked by the caller");
+        let mut cols: Vec<ColumnWrite> = c
+            .owner
+            .iter()
+            .zip(owner_values)
+            .map(|(o, v)| ColumnWrite::new(o.target.clone(), v.clone(), None))
+            .collect();
+        if let Some(order) = &c.order_column {
+            cols.push(ColumnWrite::new(
+                order.clone(),
+                Value::Int32(position),
+                Some(TypeKind::Primitive(PrimitiveKind::Int32)),
+            ));
+        }
+        match item {
+            PropertyValue::Value(v) => {
+                let column = c.value_column.clone().unwrap_or_else(|| p.column.clone());
+                cols.push(ColumnWrite::new(column, v.clone(), Some(p.kind.clone())));
+            }
+            complex => {
+                let as_entity = Property {
+                    column: String::new(),
+                    ..p.clone()
+                };
+                flatten(model, &as_entity, "", complex, true, &mut cols)?;
+            }
+        }
+        sql_insert(model, session, &c.table, &cols, &[]).await?;
+        Ok(())
+    }
+
+    /// `POST` to a collection property: one more item, at `$index` if the collection is ordered.
+    /// Negative values count from the end, so that -1 appends.
+    async fn insert_item(
+        &self,
+        req: &ODataRequest,
+        uri: &ODataUri,
+        session: &Session,
+    ) -> Result<ODataResponse, ODataError> {
+        let model = &self.inner.model;
+        let (entity_path, t, names) = self.property_target(uri)?;
+        self.check_path_visible(req, &t, &names)?;
+        let (key, version) = self.locate(req, session, entity_path, &t).await?;
+        let (_, leaf) = self.walk_property(&t, &names)?;
+        let c = leaf
+            .collection
+            .as_ref()
+            .ok_or_else(|| ODataError::bad_request("the property is not a collection"))?;
+        let doc: Json = serde_json::from_slice(&req.body)
+            .map_err(|e| ODataError::bad_request(format!("invalid JSON: {e}")))?;
+        let item = match (doc.get("value"), matches!(leaf.kind, TypeKind::Complex(_))) {
+            (Some(v), _) => v.clone(),
+            (None, true) => doc,
+            (None, false) => {
+                return Err(ODataError::bad_request(
+                    "expected a JSON object with a value member",
+                ));
+            }
+        };
+        let PropertyValue::Collection(mut items) =
+            read_property(model, leaf, &Json::Array(vec![item]), 0)?
+        else {
+            return Err(ODataError::new(500, "the item did not parse as a list"));
+        };
+        let item = items
+            .pop()
+            .ok_or_else(|| ODataError::new(500, "the item did not parse"))?;
+        let segs = [key_segment(&t, &key)];
+        let owner_cols: Vec<String> = c.owner.iter().map(|o| o.source.clone()).collect();
+        let owner_values = self
+            .column_values(req, session, &segs, &t, &owner_cols)
+            .await?
+            .ok_or_else(|| ODataError::not_found("the entity does not exist"))?;
+        let owner: Vec<ColumnValue> = c
+            .owner
+            .iter()
+            .map(|o| o.target.clone())
+            .zip(owner_values.iter().cloned())
+            .collect();
+        let position = match (&c.order_column, uri.options.index) {
+            (Some(order), index) => {
+                let used = collection_positions(model, session, &c.table, &owner, order).await?;
+                let n = used.len() as i64;
+                let at = match index {
+                    Some(i) if i >= 0 => Ord::min(i, n),
+                    Some(i) => Ord::max(n + i + 1, 0),
+                    None => n,
+                };
+                match used.get(at as usize) {
+                    Some(from) => {
+                        open_position(model, session, &c.table, &owner, order, *from).await?;
+                        *from
+                    }
+                    None => used.last().copied().unwrap_or(0) + 1,
+                }
+            }
+            (None, Some(_)) => {
+                return Err(ODataError::bad_request(format!(
+                    "{} has no order",
+                    leaf.name
+                )));
+            }
+            (None, None) => 0,
+        };
+        self.write_item(session, leaf, &owner_values, &item, position as i32)
+            .await?;
+        self.apply_update(session, &t, &key, version, TableWrites::default(), false)
+            .await?;
+        Ok(ODataResponse::new(StatusCode::NO_CONTENT))
     }
 
     /// Reads the row to change, checking existence and `If-Match`.

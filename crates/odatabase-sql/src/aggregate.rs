@@ -8,8 +8,9 @@ use crate::search::search_condition;
 use crate::{Dialect, QueryContext, QueryError, Session};
 use odatabase_edm::{PrimitiveKind, Value};
 use odatabase_uri::{
-    AggregateMethod, Aggregation, ApplyColumn, ComputeItem, Expr as UExpr, ExprType, GroupKey,
-    OrderItem, Path, PathRoot, QueryOptions, RankKind, Segment, SelectItem, Step, Transformation,
+    AggregateMethod, Aggregation, ApplyColumn, BinaryOp, ComputeItem, Expr as UExpr, ExprType,
+    Func, GroupKey, OrderItem, Path, PathRoot, QueryOptions, RankKind, SearchExpr, Segment,
+    SelectItem, Step, Transformation,
 };
 use sea_query::{
     Alias, Asterisk, Expr, ExprTrait, Order, Query, SelectStatement, UnionType, WindowStatement,
@@ -701,6 +702,54 @@ pub fn pipeline_order(options: &QueryOptions) -> Vec<OrderItem> {
     items
 }
 
+/// `$search` over rows that only have the text of `fields`, ignoring case.
+pub(crate) fn text_search(fields: &[UExpr], s: &SearchExpr) -> UExpr {
+    let binary = |op, l: UExpr, r: UExpr| UExpr::Binary(op, Box::new(l), Box::new(r));
+    match s {
+        SearchExpr::Not(inner) => UExpr::Not(Box::new(text_search(fields, inner))),
+        SearchExpr::And(l, r) => binary(
+            BinaryOp::And,
+            text_search(fields, l),
+            text_search(fields, r),
+        ),
+        SearchExpr::Or(l, r) => {
+            binary(BinaryOp::Or, text_search(fields, l), text_search(fields, r))
+        }
+        SearchExpr::Term(term) => {
+            let term = term.trim_start_matches('"').to_lowercase();
+            fields
+                .iter()
+                .map(|field| {
+                    let lowered = UExpr::Call(Func::ToLower, vec![field.clone()]);
+                    let literal = UExpr::Literal(Value::String(term.clone()));
+                    UExpr::Call(Func::Contains, vec![lowered, literal])
+                })
+                .reduce(|a, b| binary(BinaryOp::Or, a, b))
+                .unwrap_or(UExpr::Literal(Value::Boolean(false)))
+        }
+    }
+}
+
+/// A string property or column, as a path from the row.
+pub(crate) fn text_path(steps: Vec<Step>) -> UExpr {
+    UExpr::Path(Path {
+        root: PathRoot::It,
+        steps,
+        ty: ExprType::Primitive(PrimitiveKind::String),
+    })
+}
+
+/// `$search` over aggregated rows, which only have the text of their string columns.
+fn search_columns(columns: &[Column], s: &SearchExpr) -> UExpr {
+    let text = ExprType::Primitive(PrimitiveKind::String);
+    let fields: Vec<UExpr> = columns
+        .iter()
+        .filter(|c| !c.hidden && c.ty == text)
+        .map(|c| text_path(c.path.iter().cloned().map(Step::Property).collect()))
+        .collect();
+    text_search(&fields, s)
+}
+
 struct ResultQuery {
     sel: SelectStatement,
     frame: Frame,
@@ -727,6 +776,10 @@ fn result_query(
     let (mut outer, frame) = wrap(tr, stage.sel, &columns);
     if let Some(f) = &options.filter {
         let condition = tr.condition(&frame, f)?;
+        outer.and_where(condition);
+    }
+    if let Some(s) = &options.search {
+        let condition = tr.condition(&frame, &search_columns(&columns, s))?;
         outer.and_where(condition);
     }
     Ok(ResultQuery {

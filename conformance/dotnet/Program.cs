@@ -514,6 +514,42 @@ try
 }
 catch (Exception e) { Report("$entity", e); }
 
+// Nested options: Microsoft's binder must accept each $expand, and the server must answer it.
+foreach (var expand in new[] {
+    "Roles($compute=Code mul 2 as Twice)",
+    "Roles($apply=aggregate($count as Rows))",
+    "Roles($apply=groupby((Label),aggregate($count as Rows));$top=1)",
+    "Owner($levels=2)",
+}) {
+    var url = "BusinessPartners?$expand=" + expand;
+    try
+    {
+        var uri = new Uri($"{root}/BusinessPartners?$expand={Uri.EscapeDataString(expand)}");
+        new Microsoft.OData.UriParser.ODataUriParser(model, new Uri(root + "/"), uri).ParseSelectAndExpand();
+        (await Send(HttpMethod.Get, uri.ToString())).Ensure(url);
+        Report(url);
+    }
+    catch (Exception e) { Report(url, e); }
+}
+foreach (var (url, parse) in new (string, bool)[] {
+    ("$all", false),
+    ("$all?$filter=" + Uri.EscapeDataString("Name eq 'Fourth'"), false),
+    // Microsoft's URI parser has no $crossjoin path, so only the server answers this one.
+    ("$crossjoin(BusinessPartners,Roles)?$filter=" + Uri.EscapeDataString("BusinessPartners/Id eq Roles/PartnerId"), false),
+    ("BusinessPartners('1')/Comments?$top=1", true),
+    ("BusinessPartners('1')/Comments?$filter=" + Uri.EscapeDataString("contains($it,'ir')"), true),
+    ("BusinessPartners('1')/Phones?$orderby=Kind", true),
+}) {
+    try
+    {
+        var uri = new Uri($"{root}/{url}");
+        if (parse) new Microsoft.OData.UriParser.ODataUriParser(model, new Uri(root + "/"), uri).ParseUri();
+        (await Send(HttpMethod.Get, uri.ToString())).Ensure(url);
+        Report(url);
+    }
+    catch (Exception e) { Report(url, e); }
+}
+
 // Lambdas: Microsoft's binder must accept each filter, and the server must answer it.
 foreach (var filter in new[] {
     "Roles/any()",

@@ -18,6 +18,10 @@ pub enum Scope {
     Complex(String),
     /// The output of a `$apply` pipeline.
     Applied(Arc<ApplyScope>),
+    /// The items of a primitive collection, reached with `$it`.
+    Value(ExprType),
+    /// `$crossjoin`: entity sets, named like lambda variables.
+    CrossJoin(Vec<(String, ExprType)>),
     /// No implicit resource: paths are errors, as in function call arguments.
     None,
 }
@@ -84,6 +88,7 @@ pub fn parse_expression(
 ) -> Result<Expr, UriError> {
     let vars = match &scope {
         Scope::Applied(a) => a.joins.clone(),
+        Scope::CrossJoin(sets) => sets.clone(),
         _ => Vec::new(),
     };
     let mut p = ExprParser {
@@ -589,7 +594,10 @@ impl ExprParser<'_> {
             Scope::Entity(n) => Ok(ExprType::Entity(n.clone())),
             Scope::Complex(n) => Ok(ExprType::Complex(n.clone())),
             Scope::Applied(a) if !a.aggregated => Ok(ExprType::Entity(a.entity.clone())),
-            Scope::Applied(_) | Scope::None => Err(UriError::bad_request("no resource in scope")),
+            Scope::Value(t) => Ok(t.clone()),
+            Scope::Applied(_) | Scope::CrossJoin(_) | Scope::None => {
+                Err(UriError::bad_request("no resource in scope"))
+            }
         }
     }
 

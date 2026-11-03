@@ -54,7 +54,11 @@ pub fn apply_option(
             o.filter = Some(e);
         }
         "$orderby" => o.orderby = orderby(ctx, scope, value)?,
-        "$select" => o.select = Some(select(ctx, scope, value)?),
+        "$select" => {
+            let mut nested = Vec::new();
+            o.select = Some(select(ctx, scope, value, &mut nested)?);
+            o.property_options = nested;
+        }
         "$expand" => o.expand = expand(ctx, scope, value)?,
         "$top" => o.top = Some(number(name, value)?),
         "$skip" => o.skip = Some(number(name, value)?),
@@ -71,7 +75,15 @@ pub fn apply_option(
         "$format" => o.format = Some(value.to_owned()),
         // The target of `DELETE .../$ref?$id=...`, read by the write path.
         "$id" => o.custom.push((name.to_owned(), value.to_owned())),
-        "$apply" | "$compute" | "$schemaversion" => {
+        "$schemaversion" => o.schemaversion = Some(value.to_owned()),
+        "$index" => {
+            o.index = Some(
+                value
+                    .parse()
+                    .map_err(|_| UriError::bad_request("$index must be an integer"))?,
+            );
+        }
+        "$apply" | "$compute" => {
             return Err(UriError::not_implemented(format!(
                 "{name} is not supported"
             )));
@@ -129,7 +141,110 @@ fn strip_word<'t>(text: &'t str, word: &str) -> Option<&'t str> {
         .then(|| head.trim_end_matches([' ', '+']))
 }
 
-fn select(ctx: &OptionContext, scope: &Scope, value: &str) -> Result<Vec<SelectItem>, UriError> {
+/// `$compute` after `$apply`. Each item is a step, so that it sees the ones before it.
+pub fn pipeline_text(apply: Option<&str>, compute: Option<&str>) -> Option<String> {
+    let computed = compute.map(|c| {
+        let steps: Vec<String> = split_top_level(c, ',')
+            .iter()
+            .map(|item| format!("compute({item})"))
+            .collect();
+        steps.join("/")
+    });
+    match (apply, computed) {
+        (Some(a), Some(c)) => Some(format!("{a}/{c}")),
+        (Some(a), None) => Some(a.to_owned()),
+        (None, Some(c)) => Some(c),
+        (None, None) => None,
+    }
+}
+
+/// The scope a property path leads to, and whether it is a collection.
+fn path_scope(
+    ctx: &OptionContext,
+    scope: &Scope,
+    steps: &[String],
+) -> Result<(Scope, bool), UriError> {
+    let invalid = || UriError::bad_request(format!("{} takes no options", steps.join("/")));
+    let (mut current, mut collection) = (scope.clone(), false);
+    for step in steps {
+        let p = match &current {
+            Scope::Entity(t) => ctx.model.property(t, step),
+            Scope::Applied(a) if !a.aggregated => ctx.model.property(&a.entity, step),
+            Scope::Complex(c) => ctx
+                .model
+                .complex_type(c)
+                .and_then(|t| t.properties.iter().find(|p| p.name == *step)),
+            _ => None,
+        };
+        let p = p.ok_or_else(invalid)?;
+        collection = p.collection.is_some();
+        current = match property_type(p) {
+            ExprType::Complex(c) => Scope::Complex(c),
+            ExprType::Collection(inner) => match *inner {
+                ExprType::Complex(c) => Scope::Complex(c),
+                other => Scope::Value(other),
+            },
+            other => Scope::Value(other),
+        };
+    }
+    Ok((current, collection))
+}
+
+fn select_options(
+    ctx: &OptionContext,
+    scope: &Scope,
+    steps: &[String],
+    text: &str,
+    items: &mut Vec<SelectItem>,
+    nested: &mut Vec<(String, QueryOptions)>,
+) -> Result<(), UriError> {
+    let invalid = || UriError::bad_request(format!("{} takes no options", steps.join("/")));
+    let (inner, collection) = path_scope(ctx, scope, steps)?;
+    if collection {
+        if steps.len() != 1 {
+            return Err(invalid());
+        }
+        let mut options = QueryOptions::default();
+        for part in split_top_level(text, ';') {
+            let (name, value) = part
+                .split_once('=')
+                .ok_or_else(|| UriError::bad_request(format!("invalid option {part}")))?;
+            let name = name.trim();
+            if !matches!(
+                name,
+                "$filter" | "$orderby" | "$top" | "$skip" | "$count" | "$select" | "$search"
+            ) {
+                return Err(UriError::bad_request(format!(
+                    "{name} is not allowed in $select"
+                )));
+            }
+            apply_option(ctx, &inner, &mut options, name, value)?;
+        }
+        nested.push((steps[0].clone(), options));
+        items.push(SelectItem::Path(steps.to_vec()));
+        return Ok(());
+    }
+    if !matches!(inner, Scope::Complex(_)) {
+        return Err(invalid());
+    }
+    let value = text.trim().strip_prefix("$select=").ok_or_else(invalid)?;
+    for item in select(ctx, &inner, value, nested)? {
+        match item {
+            SelectItem::Star => items.push(SelectItem::Path(steps.to_vec())),
+            SelectItem::Path(rest) => {
+                items.push(SelectItem::Path([steps, &rest[..]].concat()));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn select(
+    ctx: &OptionContext,
+    scope: &Scope,
+    value: &str,
+    nested: &mut Vec<(String, QueryOptions)>,
+) -> Result<Vec<SelectItem>, UriError> {
     let mut items = Vec::new();
     for raw in split_top_level(value, ',') {
         let raw = raw.trim();
@@ -140,9 +255,20 @@ fn select(ctx: &OptionContext, scope: &Scope, value: &str) -> Result<Vec<SelectI
         if raw.is_empty() {
             return Err(UriError::bad_request("empty $select item"));
         }
-        let steps: Vec<String> = raw.split('/').map(str::to_owned).collect();
+        // `Namespace.*` asks for the operations of a type, which are metadata rather than data.
+        if ctx.model.qualified("*") == raw {
+            continue;
+        }
+        let (path, options) = match raw.find('(') {
+            Some(i) if raw.ends_with(')') => (&raw[..i], Some(&raw[i + 1..raw.len() - 1])),
+            _ => (raw, None),
+        };
+        let steps: Vec<String> = path.split('/').map(str::to_owned).collect();
         validate_select_path(ctx, scope, &steps)?;
-        items.push(SelectItem::Path(steps));
+        match options {
+            Some(text) => select_options(ctx, scope, &steps, text, &mut items, nested)?,
+            None => items.push(SelectItem::Path(steps)),
+        }
     }
     Ok(items)
 }
@@ -168,7 +294,9 @@ fn validate_select_path(
             }
             ExprType::Entity(a.entity.clone())
         }
-        Scope::None => return Err(UriError::bad_request("$select needs a structured resource")),
+        Scope::None | Scope::Value(_) | Scope::CrossJoin(_) => {
+            return Err(UriError::bad_request("$select needs a structured resource"));
+        }
     };
     for step in steps {
         current = match &current {
@@ -200,12 +328,19 @@ fn expand(ctx: &OptionContext, scope: &Scope, value: &str) -> Result<Vec<ExpandI
     }
     let owner = match scope {
         Scope::Entity(owner) => owner,
-        Scope::Applied(a) if !a.aggregated => &a.entity,
+        Scope::Applied(a) => &a.entity,
         _ => return Err(UriError::bad_request("$expand needs an entity")),
+    };
+    let grouped = match scope {
+        Scope::Applied(a) if a.aggregated => Some(a),
+        _ => None,
     };
     let mut items = Vec::new();
     for raw in split_top_level(value, ',') {
         let raw = raw.trim();
+        if grouped.is_some() && raw.starts_with('*') {
+            return Err(UriError::bad_request("$expand=* needs entities"));
+        }
         if raw == "*" || raw.starts_with("*(") || raw == "*/$ref" {
             for n in ctx.model.all_navigation(owner) {
                 let levels = raw.strip_prefix("*(").and_then(|r| r.strip_suffix(')'));
@@ -259,6 +394,18 @@ fn expand(ctx: &OptionContext, scope: &Scope, value: &str) -> Result<Vec<ExpandI
             .model
             .navigation(&from, name)
             .ok_or_else(|| UriError::bad_request(format!("unknown navigation property {name}")))?;
+        // Rows of an aggregation hold the keys they were grouped by, and nothing else to follow.
+        if let Some(a) = grouped {
+            let has = |k: &String| {
+                let path = [nav.name.clone(), k.clone()];
+                a.columns.iter().any(|c| c.path == path)
+            };
+            if nav.collection || !ctx.model.key_of(&nav.target).iter().all(has) {
+                return Err(UriError::bad_request(format!(
+                    "{name} needs its key among the groupby properties"
+                )));
+            }
+        }
         items.push(expand_item(
             ctx,
             nav,
@@ -294,7 +441,7 @@ fn expand_item(
     Ok(item)
 }
 
-fn apply_expand_options(
+pub(crate) fn apply_expand_options(
     ctx: &OptionContext,
     item: &mut ExpandItem,
     nested: &str,
@@ -310,19 +457,28 @@ fn apply_expand_options(
     };
     let mut scope = Scope::Entity(item.target.clone());
     let parts = split_top_level(nested, ';');
-    // `$apply` comes first, whatever the order: the other options see what it leaves.
-    if let Some(text) = parts.iter().find_map(|p| p.trim().strip_prefix("$apply=")) {
-        let parsed = parse_apply(&inner, &item.target, text)?;
-        let plain = parsed.steps.iter().all(|t| {
+    // `$apply` and `$compute` come first, whatever the order: the other options see their results.
+    let find = |name: &str| {
+        parts
+            .iter()
+            .find_map(|p| p.trim().strip_prefix(name)?.strip_prefix('='))
+    };
+    if let Some(text) = pipeline_text(find("$apply"), find("$compute")) {
+        let parsed = parse_apply(&inner, &item.target, &text)?;
+        let keeps_rows = parsed.steps.iter().all(|t| {
             matches!(
                 t,
-                Transformation::Identity | Transformation::Filter(_) | Transformation::Search(_)
+                Transformation::Identity
+                    | Transformation::Filter(_)
+                    | Transformation::Search(_)
+                    | Transformation::Compute(_)
             )
         });
-        if !plain {
-            return Err(UriError::not_implemented(
-                "$apply inside $expand other than filter and search",
-            ));
+        if !keeps_rows && !item.collection {
+            return Err(UriError::bad_request(format!(
+                "$apply needs a collection, and {} is single-valued",
+                item.navigation
+            )));
         }
         item.options.apply = parsed.steps;
         item.options.expand.extend(parsed.expand);
@@ -333,10 +489,18 @@ fn apply_expand_options(
             .split_once('=')
             .ok_or_else(|| UriError::bad_request(format!("invalid expand option {part}")))?;
         let name = name.trim();
-        if name == "$apply" {
+        if name == "$apply" || name == "$compute" {
             continue;
         }
         if name == "$levels" {
+            // `*` reaches every navigation, so only a named one can be the wrong kind.
+            let recursive = ctx.model.navigation(&item.target, &item.navigation);
+            if recursive.is_none() && !item.from_star {
+                return Err(UriError::bad_request(format!(
+                    "{} doesn't lead back to its own type",
+                    item.navigation
+                )));
+            }
             item.levels = Some(if value == "max" {
                 Levels::Max
             } else {
@@ -353,6 +517,11 @@ fn apply_expand_options(
             )));
         }
         apply_option(&inner, &scope, &mut item.options, name, value)?;
+    }
+    if item.options.is_aggregated() && !item.options.expand.is_empty() {
+        return Err(UriError::not_implemented(
+            "$expand after an aggregation inside $expand",
+        ));
     }
     Ok(())
 }
