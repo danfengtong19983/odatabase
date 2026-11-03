@@ -254,6 +254,11 @@ pub struct QueryOptions {
     pub search: Option<SearchExpr>,
     pub skiptoken: Option<String>,
     pub deltatoken: Option<String>,
+    pub schemaversion: Option<String>,
+    /// Where `POST` inserts into an ordered collection.
+    pub index: Option<i64>,
+    /// Options on the items of a collection property, from `$select=Name(...)`.
+    pub property_options: Vec<(String, QueryOptions)>,
     pub format: Option<String>,
     /// Query options without a `$` prefix, passed through to `nextLink`.
     pub custom: Vec<(String, String)>,

@@ -18,6 +18,8 @@ pub struct Config {
     pub expand_limits: ExpandLimits,
     /// Language of description properties when the request names none.
     pub default_language: String,
+    /// The version `$schemaversion` selects. Any other value but `*` is a 404.
+    pub schema_version: Option<String>,
     /// Time to answer a request. It frees the request, but a statement already running keeps
     /// going in the database: see `PostgresOptions::statement_timeout`.
     pub request_timeout: Option<Duration>,
@@ -29,6 +31,7 @@ impl Default for Config {
             uri_limits: Limits::default(),
             expand_limits: ExpandLimits::default(),
             default_language: "en".to_owned(),
+            schema_version: None,
             request_timeout: Some(Duration::from_secs(60)),
         }
     }
@@ -161,7 +164,18 @@ impl Service {
         {
             return Err(ODataError::bad_request("the service implements OData 4.0"));
         }
+        if let Some(response) = self.whole_service(req).await {
+            return response;
+        }
         let uri = self.parse_uri(req)?;
+        if let Some(version) = &uri.options.schemaversion
+            && version != "*"
+            && self.inner.config.schema_version.as_ref() != Some(version)
+        {
+            return Err(ODataError::not_found(format!(
+                "schema version {version} does not exist"
+            )));
+        }
         if *uri.target() == odatabase_uri::Target::Batch && req.method == Method::POST {
             return self.batch(req).await;
         }
@@ -295,6 +309,20 @@ impl ServiceBuilder {
         for set in tracked_sets {
             if let Some(s) = model.entity_sets.get_mut(&set) {
                 s.annotations.push(tracking.clone());
+            }
+        }
+        // An ordered collection takes `$index`.
+        for t in model.entity_types.values_mut() {
+            for p in &mut t.properties {
+                if p.collection
+                    .as_ref()
+                    .is_some_and(|c| c.order_column.is_some())
+                {
+                    p.annotations.push(Annotation::new(
+                        "Core.PositionalInsert",
+                        AnnotationValue::Bool(true),
+                    ));
+                }
             }
         }
         for t in model.entity_types.values() {

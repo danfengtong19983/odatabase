@@ -163,6 +163,62 @@ pub async fn delete(
     session.affected(&stmt).await
 }
 
+/// The order values of a collection's rows, ascending.
+pub async fn collection_positions(
+    model: &Model,
+    session: &Session,
+    table: &str,
+    owner: &[ColumnValue],
+    order: &str,
+) -> Result<Vec<i64>, QueryError> {
+    let dialect = session.dialect();
+    let mut stmt = Query::select();
+    stmt.column(Alias::new(order)).from(Alias::new(table));
+    for (column, value) in owner {
+        stmt.and_where(
+            Expr::col(Alias::new(column.as_str())).eq(Expr::value(to_sea(model, dialect, value)?)),
+        );
+    }
+    stmt.order_by(Alias::new(order), sea_query::Order::Asc);
+    let decode = [crate::ColumnDecode::Primitive(PrimitiveKind::Int64)];
+    let (_, rows) = session.execute(&stmt, &decode).await?;
+    Ok(rows
+        .iter()
+        .filter_map(|r| r.first().and_then(Value::as_i64))
+        .collect())
+}
+
+/// Frees order value `from` by moving it and those after it up by one. Two steps, because a
+/// unique key is checked row by row: the rows pass through negative values first.
+pub async fn open_position(
+    model: &Model,
+    session: &Session,
+    table: &str,
+    owner: &[ColumnValue],
+    order: &str,
+    from: i64,
+) -> Result<(), QueryError> {
+    let dialect = session.dialect();
+    let column = || Expr::col(Alias::new(order));
+    let step = |value: Expr, condition: Expr| -> Result<_, QueryError> {
+        let mut stmt = Query::update();
+        stmt.table(Alias::new(table))
+            .value(Alias::new(order), value)
+            .and_where(condition);
+        for (name, v) in owner {
+            stmt.and_where(
+                Expr::col(Alias::new(name.as_str())).eq(Expr::value(to_sea(model, dialect, v)?)),
+            );
+        }
+        Ok(stmt)
+    };
+    let up = step(column().add(1).mul(-1), column().gte(from))?;
+    session.affected(&up).await?;
+    let back = step(column().mul(-1), column().lt(0))?;
+    session.affected(&back).await?;
+    Ok(())
+}
+
 /// Locks the row at `segments` until the transaction ends, so that a check made after this
 /// call stays true. SQLite has no row locks, and its writers already run one at a time.
 pub async fn lock_row(

@@ -1,7 +1,8 @@
 //! Builds and runs the reads of a request: entity sets, navigation paths and counts.
 
 use crate::aggregate::{
-    count_aggregated, decode_for, narrows_entities, pipeline_keys, pipeline_order,
+    count_aggregated, decode_for, narrows_entities, pipeline_keys, pipeline_order, text_path,
+    text_search,
 };
 use crate::db::ColumnDecode;
 use crate::expand::{ExpandLimits, expand_records};
@@ -9,9 +10,9 @@ use crate::filter::{Frame, FrameKind, Translator, and_all, col};
 use crate::record::{Node, Record};
 use crate::search::search_condition;
 use crate::{QueryContext, QueryError, Session};
-use odatabase_edm::{Inheritance, Model, Property, TypeKind, Value};
+use odatabase_edm::{Inheritance, Model, PrimitiveKind, Property, TypeKind, Value};
 use odatabase_uri::{
-    ComputeItem, Expr as UExpr, OrderItem, QueryOptions, Segment, SelectItem, Transformation,
+    ComputeItem, Expr as UExpr, OrderItem, QueryOptions, Segment, SelectItem, Step, Transformation,
 };
 use sea_query::{Alias, Asterisk, Expr, ExprTrait, NullOrdering, Order, Query, SelectStatement};
 use std::collections::{BTreeMap, BTreeSet};
@@ -688,41 +689,7 @@ fn build_read(
         layout = es.layout;
     }
     apply_conditions(&mut tr, &mut sel, &frame, req.type_name, req.options)?;
-    {
-        let mut es = EntitySelect {
-            tr: &mut tr,
-            sel: &mut sel,
-            layout: std::mem::take(&mut layout),
-        };
-        for item in req
-            .options
-            .apply
-            .iter()
-            .filter_map(computed_items)
-            .flatten()
-            .filter(|item| {
-                req.options.select.as_ref().is_none_or(|list| {
-                    list.iter().any(|s| match s {
-                        SelectItem::Star => true,
-                        SelectItem::Path(p) => p.as_slice() == [item.alias.clone()],
-                    })
-                })
-            })
-        {
-            let alias = UExpr::Computed(item.alias.clone(), item.ty.clone());
-            let e = es.tr.expr(&frame, &alias)?;
-            es.add(
-                e,
-                Column {
-                    path: vec![item.alias.clone()],
-                    decode: decode_for(&item.ty),
-                    only_for: None,
-                    hidden: None,
-                },
-            );
-        }
-        layout = es.layout;
-    }
+    layout = select_computed(&mut tr, &mut sel, &frame, layout, req.options)?;
     let inner_order = pipeline_order(req.options);
     let requested = if req.options.orderby.is_empty() {
         &inner_order
@@ -754,6 +721,44 @@ fn entity_keys(
         .filter_map(|k| model.property(type_name, k))
         .map(|p| tr.scalar(frame, p))
         .collect()
+}
+
+/// Adds what `$compute` produced and `$select` asked for to the selected columns.
+pub(crate) fn select_computed(
+    tr: &mut Translator<'_>,
+    sel: &mut SelectStatement,
+    frame: &Frame,
+    layout: Layout,
+    options: &QueryOptions,
+) -> Result<Layout, QueryError> {
+    let mut es = EntitySelect { tr, sel, layout };
+    for item in options
+        .apply
+        .iter()
+        .filter_map(computed_items)
+        .flatten()
+        .filter(|item| {
+            options.select.as_ref().is_none_or(|list| {
+                list.iter().any(|s| match s {
+                    SelectItem::Star => true,
+                    SelectItem::Path(p) => p.as_slice() == [item.alias.clone()],
+                })
+            })
+        })
+    {
+        let alias = UExpr::Computed(item.alias.clone(), item.ty.clone());
+        let e = es.tr.expr(frame, &alias)?;
+        es.add(
+            e,
+            Column {
+                path: vec![item.alias.clone()],
+                decode: decode_for(&item.ty),
+                only_for: None,
+                hidden: None,
+            },
+        );
+    }
+    Ok(es.layout)
 }
 
 fn computed_items(t: &Transformation) -> Option<&Vec<ComputeItem>> {
@@ -819,17 +824,25 @@ pub async fn read_collection(
     owner: &Record,
     type_name: &str,
     property: &str,
-) -> Result<Vec<Node>, QueryError> {
+    item_options: &QueryOptions,
+) -> Result<(Vec<Node>, i64), QueryError> {
     let mut rec = [owner.clone()];
+    let mut item_options = item_options.clone();
+    item_options.count = true;
     let options = QueryOptions {
         select: Some(vec![SelectItem::Path(vec![property.to_owned()])]),
+        property_options: vec![(property.to_owned(), item_options)],
         ..QueryOptions::default()
     };
     read_collections(ctx, session, &mut rec, type_name, &options).await?;
     let [rec] = rec;
+    let total = rec.fields.iter().find_map(|(n, node)| match node {
+        Node::Count(c) if n == property => Some(*c),
+        _ => None,
+    });
     match rec.get(property) {
-        Some(Node::Collection(items)) => Ok(items.clone()),
-        _ => Ok(Vec::new()),
+        Some(Node::Collection(items)) => Ok((items.clone(), total.unwrap_or(0))),
+        _ => Ok((Vec::new(), 0)),
     }
 }
 
@@ -856,6 +869,14 @@ pub async fn read_collections(
         if !ctx.claims.sees(&p.visible_for) {
             continue;
         }
+        let own = options
+            .property_options
+            .iter()
+            .find(|(n, _)| *n == p.name)
+            .map(|(_, o)| o);
+        let chosen = own.and_then(|o| o.select.as_deref());
+        let narrowed = chosen.map(|items| Selection::from_items(model, Some(items)));
+        let inner = narrowed.as_ref().unwrap_or(inner);
         let mut tr = Translator::new(ctx.clone());
         let mut sel = Query::select();
         let alias = tr.alias();
@@ -908,6 +929,31 @@ pub async fn read_collections(
             }
         }
         let layout = es.layout;
+        if let Some(f) = own.and_then(|o| o.filter.as_ref()) {
+            let condition = tr.condition(&frame, f)?;
+            sel.and_where(condition);
+        }
+        if let Some(search) = own.and_then(|o| o.search.as_ref()) {
+            let text = TypeKind::Primitive(PrimitiveKind::String);
+            let fields: Vec<UExpr> = match &p.kind {
+                TypeKind::Complex(t) => model
+                    .complex_type(t)
+                    .into_iter()
+                    .flat_map(|c| &c.properties)
+                    .filter(|q| q.kind == text && ctx.claims.sees(&q.visible_for))
+                    .map(|q| text_path(vec![Step::Property(q.name.clone())]))
+                    .collect(),
+                kind if *kind == text => vec![text_path(Vec::new())],
+                _ => Vec::new(),
+            };
+            let condition = tr.condition(&frame, &text_search(&fields, search))?;
+            sel.and_where(condition);
+        }
+        for item in own.map_or(&[][..], |o| o.orderby.as_slice()) {
+            let (direction, nulls) = sort_direction(item.descending);
+            let e = tr.expr(&frame, &item.expr)?;
+            sel.order_by_expr_with_nulls(e, direction, nulls);
+        }
         if let Some(order) = &c.order_column {
             sel.order_by_expr(col(&alias, order), Order::Asc);
         }
@@ -944,7 +990,14 @@ pub async fn read_collections(
                     }
                 })
                 .collect();
+            let total = values.len() as i64;
+            let skip = own.and_then(|o| o.skip).unwrap_or(0) as usize;
+            let top = own.and_then(|o| o.top).map_or(usize::MAX, |t| t as usize);
+            let values = values.into_iter().skip(skip).take(top).collect();
             rec.set(p.name.clone(), Node::Collection(values));
+            if own.is_some_and(|o| o.count) {
+                rec.fields.push((p.name.clone(), Node::Count(total)));
+            }
         }
     }
     Ok(())

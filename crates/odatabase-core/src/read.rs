@@ -96,6 +96,9 @@ impl Service {
         session: &Session,
     ) -> Result<ODataResponse, ODataError> {
         self.check_selected_visibility(req, uri)?;
+        if uri.options.index.is_some() {
+            return Err(ODataError::bad_request("$index belongs on a POST"));
+        }
         if uri.options.deltatoken.is_some() && !matches!(uri.target(), Target::EntityCollection(_))
         {
             return Err(ODataError::bad_request("$deltatoken needs an entity set"));
@@ -158,7 +161,7 @@ impl Service {
     }
 
     /// A property named in `$select` must be visible, even though `*` silently skips it.
-    fn check_selected_visibility(
+    pub(crate) fn check_selected_visibility(
         &self,
         req: &ODataRequest,
         uri: &ODataUri,
@@ -308,6 +311,10 @@ impl Service {
             read_entities(&ctx, session, read).await?
         };
         crate::transient::apply(&self.inner, &mut records);
+        if o.is_aggregated() {
+            self.expand_aggregated(req, session, o, &mut records)
+                .await?;
+        }
         let has_more =
             page.next.is_some() && page.top.is_some_and(|top| records.len() as u64 > top);
         if has_more && let Some(top) = page.top {
@@ -355,6 +362,47 @@ impl Service {
             Self::tracked_response(&mut r);
         }
         Ok(r)
+    }
+
+    /// `$expand` after an aggregation: rows hold the key of a to-one target they were grouped by.
+    async fn expand_aggregated(
+        &self,
+        req: &ODataRequest,
+        session: &Session,
+        o: &QueryOptions,
+        records: &mut [Record],
+    ) -> Result<(), ODataError> {
+        let model = &self.inner.model;
+        for item in &o.expand {
+            let key_of = |rec: &Record| -> Option<Vec<(String, odatabase_edm::Value)>> {
+                let Some(Node::Complex(Some(inner))) = rec.get(&item.navigation) else {
+                    return None;
+                };
+                model
+                    .key_of(&item.target)
+                    .iter()
+                    .map(|k| Some((k.clone(), inner.value(k)?.clone())))
+                    .collect()
+            };
+            let mut keys: Vec<_> = records.iter().filter_map(key_of).collect();
+            keys.sort_by_key(|k| crate::url::key_text(k));
+            keys.dedup();
+            let set = crate::url::set_of(model, &item.target)
+                .ok_or_else(|| ODataError::not_implemented("$expand to a type without a set"))?;
+            let found = self
+                .entities_with_keys(req, session, set, &item.target, &item.options, &keys)
+                .await?;
+            let by_key: std::collections::HashMap<String, Record> = found
+                .into_iter()
+                .filter_map(|r| Some((crate::url::key_predicate(model, &item.target, &r)?, r)))
+                .collect();
+            for rec in records.iter_mut() {
+                let target = key_of(rec).and_then(|k| by_key.get(&crate::url::key_text(&k)));
+                let node = Node::Entity(target.cloned().map(Box::new));
+                rec.set(item.navigation.clone(), node);
+            }
+        }
+        Ok(())
     }
 
     fn writer<'a>(&'a self, req: &'a ODataRequest, format: Format) -> Writer<'a> {
@@ -525,7 +573,9 @@ impl Service {
             let Some((rec, t)) = self.owner(req, session, entity_path, name).await? else {
                 return Err(ODataError::not_found("the entity does not exist"));
             };
-            read_collection(&ctx, session, &rec, &t, name).await?.len() as i64
+            read_collection(&ctx, session, &rec, &t, name, &uri.options)
+                .await?
+                .1
         } else {
             let t = match body_path.last().map(Segment::target) {
                 Some(Target::EntityCollection(t)) => t,
@@ -568,7 +618,7 @@ impl Service {
         req: &ODataRequest,
         uri: &ODataUri,
         session: &Session,
-    ) -> Result<Option<(Node, String, Record)>, ODataError> {
+    ) -> Result<Option<(Node, String, Option<i64>)>, ODataError> {
         let path = match uri.path.last() {
             Some(Segment::Value | Segment::Ref) => &uri.path[..uri.path.len() - 1],
             _ => &uri.path[..],
@@ -590,6 +640,7 @@ impl Service {
         let Some((rec, t)) = self.owner(req, session, entity_path, first).await? else {
             return Ok(None);
         };
+        let mut count = None;
         let mut node = if self
             .inner
             .model
@@ -598,7 +649,10 @@ impl Service {
         {
             let language = language(req, &self.inner.config.default_language);
             let ctx = self.query_context(req, &language, session);
-            Node::Collection(read_collection(&ctx, session, &rec, &t, first).await?)
+            let (items, total) =
+                read_collection(&ctx, session, &rec, &t, first, &uri.options).await?;
+            count = Some(total);
+            Node::Collection(items)
         } else {
             rec.get(first)
                 .cloned()
@@ -615,7 +669,7 @@ impl Service {
         }
         let id = entity_id(&self.inner.model, &t, &rec).unwrap_or_default();
         let context = format!("{id}/{}", names.join("/"));
-        Ok(Some((node, context, rec)))
+        Ok(Some((node, context, count)))
     }
 
     async fn property(
@@ -625,7 +679,7 @@ impl Service {
         session: &Session,
     ) -> Result<ODataResponse, ODataError> {
         let format = Format::negotiate(uri.options.format.as_deref(), &req.headers)?;
-        let Some((node, context, _)) = self.read_property(req, uri, session).await? else {
+        let Some((node, context, total)) = self.read_property(req, uri, session).await? else {
             return Err(ODataError::not_found("the entity does not exist"));
         };
         if matches!(
@@ -641,6 +695,11 @@ impl Service {
                 "@odata.context".into(),
                 format!("{}/$metadata#{context}", req.root).into(),
             );
+            if uri.options.count
+                && let Some(total) = total
+            {
+                body.insert("@odata.count".into(), total.into());
+            }
         }
         match &node {
             Node::Complex(Some(_)) => {
@@ -766,10 +825,14 @@ impl Service {
                     .iter()
                     .map(|r| json!({"@odata.id": id(r)}))
                     .collect();
-                let body = json!({
+                let mut body = json!({
                     "@odata.context": format!("{}/$metadata#Collection($ref)", req.root),
                     "value": value,
                 });
+                if uri.options.count {
+                    let n = count_collection(&ctx, session, path, t, &uri.options).await?;
+                    body["@odata.count"] = n.into();
+                }
                 Ok(ODataResponse::json(
                     StatusCode::OK,
                     format.content_type(),

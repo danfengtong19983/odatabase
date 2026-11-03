@@ -156,8 +156,8 @@ fn balanced(op: BinaryOp, mut parts: Vec<Expr>) -> Option<Expr> {
     }
 }
 
-/// The options that read the changed rows of a page.
-fn page_options(
+/// The options, restricted to entities with these keys.
+pub(crate) fn only_keys(
     model: &Model,
     type_name: &str,
     o: &QueryOptions,
@@ -170,6 +170,17 @@ fn page_options(
         Some(f) => Expr::Binary(BinaryOp::And, Box::new(f), Box::new(only)),
         None => only,
     });
+    Ok(options)
+}
+
+/// The options that read the changed rows of a page.
+fn page_options(
+    model: &Model,
+    type_name: &str,
+    o: &QueryOptions,
+    keys: &[Vec<(String, Value)>],
+) -> Result<QueryOptions, ODataError> {
+    let mut options = only_keys(model, type_name, o, keys)?;
     options.orderby.clear();
     options.count = false;
     options.skiptoken = None;
@@ -189,6 +200,39 @@ fn page_options(
 }
 
 impl Service {
+    /// Reads the entities of `set` with these keys, under the caller's restrictions.
+    pub(crate) async fn entities_with_keys(
+        &self,
+        req: &ODataRequest,
+        session: &Session,
+        set: &str,
+        type_name: &str,
+        options: &QueryOptions,
+        keys: &[Vec<(String, Value)>],
+    ) -> Result<Vec<odatabase_sql::Record>, ODataError> {
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        let model = &self.inner.model;
+        let options = only_keys(model, type_name, options, keys)?;
+        let segments = [Segment::EntitySet {
+            name: set.to_owned(),
+            target: odatabase_uri::Target::EntityCollection(type_name.to_owned()),
+        }];
+        let language = crate::read::language(req, &self.inner.config.default_language);
+        let ctx = self.query_context(req, &language, session);
+        let read = ReadRequest {
+            segments: &segments,
+            type_name,
+            options: &options,
+            page: Page::default(),
+            limits: self.inner.config.expand_limits,
+        };
+        let mut records = read_entities(&ctx, session, read).await?;
+        crate::transient::apply(&self.inner, &mut records);
+        Ok(records)
+    }
+
     /// Notes a change in the transaction of `session`, if its type is tracked.
     pub(crate) async fn record(
         &self,

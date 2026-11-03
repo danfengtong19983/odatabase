@@ -4,7 +4,9 @@ use crate::UriError;
 use crate::apply::parse_apply;
 use crate::ast::*;
 use crate::expr::{Aliases, Scope, parse_expression, property_type};
-use crate::options::{OptionContext, apply_option, split_top_level};
+use crate::options::{
+    OptionContext, apply_expand_options, apply_option, pipeline_text, split_top_level,
+};
 use odatabase_edm::{Model, Operation, OperationType, OperationTypeKind, TypeKind, Value};
 use percent_encoding::percent_decode_str;
 
@@ -49,12 +51,15 @@ pub fn parse_with(
     let scope = match segments.last().map(Segment::target) {
         Some(Target::EntityCollection(t) | Target::Entity(t)) => Scope::Entity(t.clone()),
         Some(Target::Complex(t) | Target::ComplexCollection(t)) => Scope::Complex(t.clone()),
+        Some(Target::PrimitiveCollection(t)) => Scope::Value(t.clone()),
         Some(Target::Ref { .. }) => match segments.iter().rev().nth(1).map(Segment::target) {
             Some(Target::EntityCollection(t) | Target::Entity(t)) => Scope::Entity(t.clone()),
             _ => Scope::None,
         },
         Some(Target::Count) => match segments.iter().rev().nth(1).map(Segment::target) {
             Some(Target::EntityCollection(t)) => Scope::Entity(t.clone()),
+            Some(Target::ComplexCollection(t)) => Scope::Complex(t.clone()),
+            Some(Target::PrimitiveCollection(t)) => Scope::Value(t.clone()),
             _ => Scope::None,
         },
         _ => Scope::None,
@@ -70,20 +75,7 @@ pub fn parse_with(
     let apply = raw.iter().find(|(n, _)| n == "$apply").map(|(_, v)| v);
     let compute = raw.iter().find(|(n, _)| n == "$compute").map(|(_, v)| v);
     // `$compute` acts like a last step of `$apply`, with the options after it seeing its results.
-    // Each item is a step of its own, so that it sees the ones before it.
-    let computed = compute.map(|c| {
-        let steps: Vec<String> = split_top_level(c, ',')
-            .iter()
-            .map(|item| format!("compute({item})"))
-            .collect();
-        steps.join("/")
-    });
-    let pipeline = match (apply, computed) {
-        (Some(a), Some(c)) => Some(format!("{a}/{c}")),
-        (Some(a), None) => Some(a.clone()),
-        (None, Some(c)) => Some(c),
-        (None, None) => None,
-    };
+    let pipeline = pipeline_text(apply.map(String::as_str), compute.map(String::as_str));
     if let Some(text) = &pipeline {
         let entity = match segments.last().map(Segment::target) {
             Some(Target::EntityCollection(t)) => t,
@@ -104,15 +96,6 @@ pub fn parse_with(
         };
         let parsed = parse_apply(&ctx, entity, text)?;
         options.apply = parsed.steps;
-        if options.is_aggregated() {
-            for unsupported in ["$expand", "$search"] {
-                if raw.iter().any(|(n, _)| n == unsupported) {
-                    return Err(UriError::not_implemented(format!(
-                        "{unsupported} after an aggregation"
-                    )));
-                }
-            }
-        }
         applied_expand = parsed.expand;
         scope = parsed.scope;
     }
@@ -133,6 +116,82 @@ pub fn parse_with(
         path: segments,
         options,
     })
+}
+
+/// Parses `$crossjoin(names)` with its query. Returns each set with its type, and the options.
+pub fn parse_crossjoin(
+    model: &Model,
+    names: &str,
+    query: &str,
+    limits: Limits,
+) -> Result<(Vec<(String, String)>, QueryOptions), UriError> {
+    let mut sets: Vec<(String, String)> = Vec::new();
+    for name in names.split(',').map(str::trim) {
+        let set = model
+            .entity_sets
+            .get(name)
+            .ok_or_else(|| UriError::not_found(format!("resource {name} does not exist")))?;
+        if sets.iter().any(|(n, _)| n == name) {
+            return Err(UriError::bad_request(format!("{name} is given twice")));
+        }
+        sets.push((name.to_owned(), set.entity_type.clone()));
+    }
+    let raw = decode_query(query)?;
+    let aliases = Aliases::new();
+    let ctx = OptionContext {
+        model,
+        aliases: &aliases,
+        limits,
+        expand_depth: 0,
+    };
+    let vars = sets
+        .iter()
+        .map(|(n, t)| (n.clone(), ExprType::Entity(t.clone())))
+        .collect();
+    let scope = Scope::CrossJoin(vars);
+    let mut options = QueryOptions::default();
+    for (name, value) in &raw {
+        match name.as_str() {
+            "$filter" | "$orderby" | "$top" | "$skip" | "$count" | "$format" | "$skiptoken" => {
+                apply_option(&ctx, &scope, &mut options, name, value)?;
+            }
+            "$expand" => {
+                for item in split_top_level(value, ',') {
+                    let item = item.trim();
+                    let (set, nested) = match item.find('(') {
+                        Some(i) if item.ends_with(')') => {
+                            (&item[..i], &item[i + 1..item.len() - 1])
+                        }
+                        _ => (item, ""),
+                    };
+                    let (set, target) = sets
+                        .iter()
+                        .find(|(n, _)| n == set)
+                        .ok_or_else(|| UriError::bad_request(format!("{set} is not joined")))?;
+                    let mut expanded = ExpandItem {
+                        prefix: Vec::new(),
+                        navigation: set.clone(),
+                        target: target.clone(),
+                        collection: false,
+                        options: QueryOptions::default(),
+                        levels: None,
+                        count_only: false,
+                        ref_only: false,
+                        from_star: false,
+                    };
+                    apply_expand_options(&ctx, &mut expanded, nested)?;
+                    options.expand.push(expanded);
+                }
+            }
+            other if other.starts_with('$') => {
+                return Err(UriError::bad_request(format!(
+                    "{other} is not allowed on $crossjoin"
+                )));
+            }
+            _ => {}
+        }
+    }
+    Ok((sets, options))
 }
 
 /// Takes `$id` out of the query string of a `$entity` request.

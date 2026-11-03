@@ -4,6 +4,7 @@ expression: "odatabase::edm::to_csdl_xml(service(pool.into()).model())"
 ---
 <?xml version="1.0" encoding="utf-8"?>
 <edmx:Edmx Version="4.0" xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
+<edmx:Reference Uri="https://oasis-tcs.github.io/odata-vocabularies/vocabularies/Org.OData.Core.V1.xml"><edmx:Include Namespace="Org.OData.Core.V1" Alias="Core"/></edmx:Reference>
 <edmx:Reference Uri="https://oasis-tcs.github.io/odata-vocabularies/vocabularies/Org.OData.Aggregation.V1.xml"><edmx:Include Namespace="Org.OData.Aggregation.V1" Alias="Aggregation"/></edmx:Reference>
 <edmx:DataServices>
 <Schema Namespace="Test" xmlns="http://docs.oasis-open.org/odata/ns/edm">
@@ -33,8 +34,10 @@ expression: "odatabase::edm::to_csdl_xml(service(pool.into()).model())"
 <Property Name="Founded" Type="Edm.Date"/>
 <Property Name="ExternalId" Type="Edm.Guid"/>
 <Property Name="Address" Type="Test.Address"/>
-<Property Name="Comments" Type="Collection(Edm.String)" Nullable="false"/>
-<Property Name="Phones" Type="Collection(Test.Phone)" Nullable="false"/>
+<Property Name="Comments" Type="Collection(Edm.String)" Nullable="false"><Annotation Term="Core.PositionalInsert" Bool="true"/>
+</Property>
+<Property Name="Phones" Type="Collection(Test.Phone)" Nullable="false"><Annotation Term="Core.PositionalInsert" Bool="true"/>
+</Property>
 <NavigationProperty Name="Roles" Type="Collection(Test.Role)" Partner="Partner"/>
 <NavigationProperty Name="Projects" Type="Collection(Test.Project)" Partner="Partners"/>
 <NavigationProperty Name="Owner" Type="Test.BusinessPartner"/>
@@ -81,7 +84,8 @@ expression: "odatabase::edm::to_csdl_xml(service(pool.into()).model())"
 <Property Name="Priority" Type="Edm.Int32"/>
 <Property Name="Version" Type="Edm.Int32" Nullable="false"/>
 <Property Name="ProjectId" Type="Edm.Int32"/>
-<Property Name="Tags" Type="Collection(Edm.String)" Nullable="false"/>
+<Property Name="Tags" Type="Collection(Edm.String)" Nullable="false"><Annotation Term="Core.PositionalInsert" Bool="true"/>
+</Property>
 </EntityType>
 <Function Name="Abs" IsComposable="true">
 <Parameter Name="x" Type="Edm.Int32" Nullable="false"/>

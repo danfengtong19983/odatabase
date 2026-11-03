@@ -273,6 +273,12 @@ public class Main {
       expect(e.getNavigationLink("Roles") != null, "no navigation link");
       return e.getEditLink().toString();
     });
+    check("$top on a collection property", () -> {
+      URI uri = URI.create(ROOT + "/BusinessPartners(%271%27)/Comments?%24top=1");
+      var values = client.getRetrieveRequestFactory().getPropertyRequest(uri).execute().getBody();
+      expect(values.getCollectionValue().size() == 1, values.getCollectionValue().size() + " items");
+      return "1 item";
+    });
     check("$entity", () -> {
       URI uri = URI.create(ROOT + "/$entity?$id=BusinessPartners('1')".replace("'", "%27"));
       ClientEntity e = client.getRetrieveRequestFactory().getEntityRequest(uri).execute().getBody();

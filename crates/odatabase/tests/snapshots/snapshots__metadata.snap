@@ -4,6 +4,7 @@ expression: to_csdl_xml(&model())
 ---
 <?xml version="1.0" encoding="utf-8"?>
 <edmx:Edmx Version="4.0" xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
+<edmx:Reference Uri="https://oasis-tcs.github.io/odata-vocabularies/vocabularies/Org.OData.Core.V1.xml"><edmx:Include Namespace="Org.OData.Core.V1" Alias="Core"/></edmx:Reference>
 <edmx:Reference Uri="https://oasis-tcs.github.io/odata-vocabularies/vocabularies/Org.OData.Aggregation.V1.xml"><edmx:Include Namespace="Org.OData.Aggregation.V1" Alias="Aggregation"/></edmx:Reference>
 <edmx:DataServices>
 <Schema Namespace="Test" xmlns="http://docs.oasis-open.org/odata/ns/edm">
@@ -33,8 +34,10 @@ expression: to_csdl_xml(&model())
 <Property Name="Founded" Type="Edm.Date"/>
 <Property Name="ExternalId" Type="Edm.Guid"/>
 <Property Name="Address" Type="Test.Address"/>
-<Property Name="Comments" Type="Collection(Edm.String)" Nullable="false"/>
-<Property Name="Phones" Type="Collection(Test.Phone)" Nullable="false"/>
+<Property Name="Comments" Type="Collection(Edm.String)" Nullable="false"><Annotation Term="Core.PositionalInsert" Bool="true"/>
+</Property>
+<Property Name="Phones" Type="Collection(Test.Phone)" Nullable="false"><Annotation Term="Core.PositionalInsert" Bool="true"/>
+</Property>
 <NavigationProperty Name="Roles" Type="Collection(Test.Role)" Partner="Partner"/>
 <NavigationProperty Name="Projects" Type="Collection(Test.Project)" Partner="Partners"/>
 <NavigationProperty Name="Owner" Type="Test.BusinessPartner"/>
@@ -81,7 +84,8 @@ expression: to_csdl_xml(&model())
 <Property Name="Priority" Type="Edm.Int32"/>
 <Property Name="Version" Type="Edm.Int32" Nullable="false"/>
 <Property Name="ProjectId" Type="Edm.Int32"/>
-<Property Name="Tags" Type="Collection(Edm.String)" Nullable="false"/>
+<Property Name="Tags" Type="Collection(Edm.String)" Nullable="false"><Annotation Term="Core.PositionalInsert" Bool="true"/>
+</Property>
 </EntityType>
 <EntityContainer Name="Container">
 <EntitySet Name="BusinessPartners" EntityType="Test.BusinessPartner"><NavigationPropertyBinding Path="Roles" Target="Roles"/><NavigationPropertyBinding Path="Projects" Target="Projects"/><NavigationPropertyBinding Path="Owner" Target="BusinessPartners"/><NavigationPropertyBinding Path="Owned" Target="BusinessPartners"/><Annotation Term="Aggregation.ApplySupported"><Record><PropertyValue Property="Transformations"><Collection><String>aggregate</String><String>bottomcount</String><String>bottompercent</String><String>bottomsum</String><String>compute</String><String>concat</String><String>expand</String><String>filter</String><String>groupby</String><String>identity</String><String>join</String><String>orderby</String><String>outerjoin</String><String>search</String><String>skip</String><String>top</String><String>topcount</String><String>toppercent</String><String>topsum</String></Collection></PropertyValue></Record></Annotation>

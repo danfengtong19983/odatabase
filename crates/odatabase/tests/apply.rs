@@ -657,12 +657,7 @@ async fn rejected(app: App) {
     assert_eq!(
         app.status("BusinessPartners?$apply=groupby((Abc))&$expand=Roles")
             .await,
-        501
-    );
-    assert_eq!(
-        app.status("BusinessPartners?$expand=Roles($apply=aggregate($count as N))")
-            .await,
-        501
+        400
     );
     assert_eq!(
         app.ids("BusinessPartners").await.len(),

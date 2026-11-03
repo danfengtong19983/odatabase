@@ -190,7 +190,23 @@ async fn entity_results(app: App) {
     assert_eq!(doc["value"][0]["Name"], "First Org");
     assert!(doc["value"][0].get("Rating").is_none());
     assert_eq!(doc["value"][0]["Roles"].as_array().unwrap().len(), 1);
-    assert_eq!(app.status("TopPartners()?$filter=Id eq '1'").await, 501);
+    assert_eq!(
+        app.ids("TopPartners()?$filter=Id eq '1'").await,
+        ["1"],
+        "the options of a normal read apply to the entities"
+    );
+    assert_eq!(app.ids("TopPartners()?$orderby=Id desc").await, ["2", "1"]);
+    assert_eq!(app.ids("TopPartners()?$top=1&$skip=1").await, ["2"]);
+    let doc = app.ok("TopPartners()?$top=1&$count=true").await;
+    assert_eq!(doc["@odata.count"], 2, "before paging");
+    assert_eq!(app.ok("Numbers()?$top=1").await["value"], json!([1]));
+    assert_eq!(app.ok("Numbers()?$skip=1").await["value"], json!([2]));
+    assert_eq!(app.ok("Numbers()?$count=true").await["@odata.count"], 2);
+    assert_eq!(
+        app.status("Numbers()?$filter=$it gt 1").await,
+        501,
+        "values come from the handler, so nothing can filter them"
+    );
 }
 
 async fn bound_functions(app: App) {

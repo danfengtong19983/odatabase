@@ -17,6 +17,7 @@ mod service;
 mod transient;
 mod url;
 mod visibility;
+mod wide;
 mod write;
 
 pub use change::{AcceptAll, ChangeContext, ChangeHandler, EntityKey};

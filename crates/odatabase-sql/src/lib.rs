@@ -6,6 +6,7 @@
 mod aggregate;
 mod changes;
 mod context;
+mod crossjoin;
 mod db;
 mod dialect;
 mod error;
@@ -22,6 +23,7 @@ pub use changes::{
     ChangeKind, LoggedChange, change_floor, change_position, read_changes, record_change,
 };
 pub use context::{ClaimValue, Claims, QueryContext, QueryExtension, TableRef};
+pub use crossjoin::{CrossJoinRow, count_crossjoin, read_crossjoin};
 #[cfg(feature = "postgres")]
 pub use db::PostgresOptions;
 pub use db::{ColumnDecode, Database, Session, Tx};
@@ -35,4 +37,7 @@ pub use query::{
 pub use record::{Node, Record, Refs};
 pub use sea_query;
 pub use values::{from_sea_string, to_sea};
-pub use write::{ColumnValue, ColumnWrite, delete, insert, lock_row, read_columns, update};
+pub use write::{
+    ColumnValue, ColumnWrite, collection_positions, delete, insert, lock_row, open_position,
+    read_columns, update,
+};

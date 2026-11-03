@@ -459,6 +459,43 @@ async fn aggregates_respect_protection(app: App) {
         "the group opens the navigation, not the rows"
     );
 
+    for uri in [
+        "Holders?$expand=Audit($apply=aggregate($count as N))",
+        "Holders?$expand=Archived($compute=Id mul 2 as D)",
+        "Holders('1')?$expand=Secrets($compute=Salary mul 2 as D)",
+        "Holders('1')?$expand=Secrets($apply=aggregate(Salary with sum as T))",
+        "$crossjoin(Secrets,Holders)?$filter=Secrets/Salary gt 1",
+        "$crossjoin(Archive,Holders)",
+    ] {
+        assert_eq!(user.status(uri).await, 403, "{uri}");
+    }
+    assert_eq!(app.status("$crossjoin(Secrets,Holders)").await, 403);
+    let doc = user
+        .ok("Holders('1')?$expand=Secrets($apply=aggregate($count as N))")
+        .await;
+    assert_eq!(doc["Secrets"][0]["N"], 1, "permitted rows only, per parent");
+    let doc = user.ok("$crossjoin(Secrets,Holders)?$count=true").await;
+    assert_eq!(doc["@odata.count"], 4, "one permitted row, four holders");
+    let doc = user.ok("$all?$count=true").await;
+    let rows = doc["value"].as_array().unwrap();
+    assert_eq!(
+        rows.iter().filter(|r| r["Tenant"].is_string()).count(),
+        1,
+        "$all keeps row protection: {doc}"
+    );
+    assert!(
+        rows.iter().all(|r| r["Salary"].is_null()),
+        "and hidden properties"
+    );
+    let doc = app.ok("$all").await;
+    assert!(
+        doc["value"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["Tenant"].is_null()),
+        "a set the caller can't read adds nothing"
+    );
     let doc = user.ok("Secrets?$compute=Level mul 2 as D").await;
     assert_eq!(
         doc["value"].as_array().unwrap().len(),

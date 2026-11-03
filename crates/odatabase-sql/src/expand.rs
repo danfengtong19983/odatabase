@@ -1,16 +1,17 @@
 //! `$expand`: one query per level, restricted to the keys of the parent rows.
 
+use crate::aggregate::{narrows_entities, read_aggregated};
 use crate::db::ColumnDecode;
 use crate::filter::{Frame, Translator, and_all, col};
 use crate::query::{
-    EntitySelect, Layout, apply_conditions, distinct_keys, fetch_layout, read_collections,
-    select_entity, sort_direction, to_records,
+    EntitySelect, Layout, Page, ReadRequest, apply_conditions, count_collection, distinct_keys,
+    fetch_layout, read_collections, read_entities, select_entity, sort_direction, to_records,
 };
 use crate::record::{Node, Record, Refs};
 use crate::{QueryContext, QueryError, Session};
 use futures::future::{BoxFuture, try_join_all};
 use odatabase_edm::{NavigationProperty, PrimitiveKind, Value};
-use odatabase_uri::{ExpandItem, Levels, QueryOptions, SelectItem};
+use odatabase_uri::{ExpandItem, Levels, QueryOptions, Segment, SelectItem, Target};
 use sea_query::{
     Alias, Asterisk, Expr, ExprTrait, NullOrdering, Order, OverStatement, Query, SelectStatement,
 };
@@ -49,6 +50,13 @@ pub fn select_join_columns(es: &mut EntitySelect<'_, '_>, frame: &Frame, options
         if let Some(nav) = model.navigation(type_name, &item.navigation) {
             for column in source_columns(nav) {
                 es.hidden(frame, column);
+            }
+            // A pipeline reads through the path from each parent.
+            if !item.options.apply.is_empty() {
+                let keys = model.key_of(type_name).iter();
+                for p in keys.filter_map(|k| model.property(type_name, k)) {
+                    es.hidden(frame, &p.column);
+                }
             }
         }
     }
@@ -221,7 +229,10 @@ async fn load_item(
     if keys.is_empty() {
         return Ok(loaded);
     }
-    let options = effective_options(item, limits);
+    let options = effective_options(ctx, item, limits);
+    if options.is_aggregated() || narrows_entities(&options) {
+        return load_pipeline(ctx, session, parents, item, &options, loaded, limits).await;
+    }
     let want_rows = !item.count_only;
     let want_count = item.count_only || item.options.count;
     let mut total: u64 = 0;
@@ -262,8 +273,87 @@ async fn load_item(
     Ok(loaded)
 }
 
+/// Runs a `$apply` that changes the rows, once per parent: unlike a filter, its result depends
+/// on all the rows of that parent.
+#[allow(clippy::too_many_arguments)]
+async fn load_pipeline(
+    ctx: &QueryContext<'_>,
+    session: &Session,
+    parents: &[Record],
+    item: &ExpandItem,
+    options: &QueryOptions,
+    mut loaded: Loaded,
+    limits: ExpandLimits,
+) -> Result<Loaded, QueryError> {
+    let model = ctx.model;
+    let cols: Vec<&str> = loaded.keys.iter().map(String::as_str).collect();
+    let mut total = 0u64;
+    for parent in parents {
+        let group = hidden_key(parent, &cols);
+        if loaded.children.contains_key(&group) {
+            continue;
+        }
+        // The parent's own type: a list can mix derived types, and each filters to its rows.
+        let owner = parent.type_name.as_str();
+        let values = model
+            .key_of(owner)
+            .iter()
+            .map(|k| {
+                let p = model.property(owner, k)?;
+                let value = parent.value(k).or(parent.hidden.get(&p.column))?;
+                Some((k.clone(), value.clone()))
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| QueryError::internal("a parent without its key"))?;
+        let segments = [
+            Segment::Key {
+                values,
+                target: Target::Entity(owner.to_owned()),
+            },
+            Segment::Navigation {
+                name: item.navigation.clone(),
+                target: Target::EntityCollection(item.target.clone()),
+            },
+        ];
+        let page = Page {
+            top: options.top,
+            skip: options.skip,
+        };
+        let aggregated = options.is_aggregated();
+        let rows = if aggregated {
+            read_aggregated(ctx, session, &segments, &item.target, options, page).await?
+        } else {
+            let read = ReadRequest {
+                segments: &segments,
+                type_name: &item.target,
+                options,
+                page,
+                limits,
+            };
+            read_entities(ctx, session, read).await?
+        };
+        if options.count {
+            let n = count_collection(ctx, session, &segments, &item.target, options).await?;
+            loaded.counts.insert(group.clone(), n);
+        }
+        total += rows.len() as u64;
+        if total > limits.max_rows {
+            return Err(QueryError::bad_request(format!(
+                "$expand of {} exceeds {} rows",
+                item.navigation, limits.max_rows
+            )));
+        }
+        loaded.children.insert(group, rows);
+    }
+    Ok(loaded)
+}
+
 /// The nested options, with `$levels` written out as nested expands.
-fn effective_options(item: &ExpandItem, limits: ExpandLimits) -> QueryOptions {
+fn effective_options(
+    ctx: &QueryContext<'_>,
+    item: &ExpandItem,
+    limits: ExpandLimits,
+) -> QueryOptions {
     let mut options = item.options.clone();
     if item.ref_only {
         options.select = Some(Vec::new());
@@ -273,7 +363,12 @@ fn effective_options(item: &ExpandItem, limits: ExpandLimits) -> QueryOptions {
         Some(Levels::Max) => limits.max_levels,
         None => 0,
     };
-    if remaining > 1 {
+    // A navigation that doesn't lead back to its own type has no further levels.
+    let recursive = ctx
+        .model
+        .navigation(&item.target, &item.navigation)
+        .is_some();
+    if remaining > 1 && recursive {
         let mut next = item.clone();
         next.levels = Some(Levels::Number(remaining - 1));
         options.expand.push(next);
@@ -348,6 +443,7 @@ fn child_query(
         layout = es.layout;
     }
     apply_conditions(tr, &mut sel, &frame, &item.target, options)?;
+    let layout = crate::query::select_computed(tr, &mut sel, &frame, layout, options)?;
     Ok(ChildQuery {
         sel,
         layout,
