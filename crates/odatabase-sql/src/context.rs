@@ -1,5 +1,5 @@
 use crate::{Dialect, QueryError};
-use odatabase_edm::{Model, Value};
+use odatabase_edm::{Model, TenantColumn, Value};
 use sea_query::{Alias, Expr};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -10,6 +10,15 @@ pub enum ClaimValue {
     Equals(Value),
     /// Inclusive range.
     Range(Value, Value),
+    /// Every value of a tenant claim, for an operator reading across tenants.
+    Any,
+}
+
+/// Which tenants a request reaches.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TenantScope {
+    All,
+    Only(Vec<Value>),
 }
 
 /// What the current user may see, supplied per request by the application.
@@ -28,6 +37,45 @@ impl Claims {
     pub fn with_group(mut self, group: impl Into<String>) -> Self {
         self.groups.push(group.into());
         self
+    }
+
+    /// The tenants of `column` these claims reach. Without one the caller reaches no rows.
+    pub fn tenant_scope(&self, column: &TenantColumn) -> Result<TenantScope, QueryError> {
+        let values = self.values.get(&column.claim);
+        let values = values
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| QueryError::forbidden(format!("claim {} is required", column.claim)))?;
+        let mut tenants = Vec::with_capacity(values.len());
+        for value in values {
+            match value {
+                ClaimValue::Any => return Ok(TenantScope::All),
+                ClaimValue::Equals(v) => {
+                    // Claims often arrive as text, but a uuid column compares with a uuid.
+                    let typed = Value::parse_text(column.kind, &v.to_text()).map_err(|_| {
+                        QueryError::forbidden(format!("claim {} is invalid", column.claim))
+                    })?;
+                    tenants.push(typed);
+                }
+                ClaimValue::Range(..) => {
+                    return Err(QueryError::forbidden(format!(
+                        "claim {} must name tenants",
+                        column.claim
+                    )));
+                }
+            }
+        }
+        Ok(TenantScope::Only(tenants))
+    }
+
+    /// The one tenant a write belongs to. A caller who reaches several must pick one first,
+    /// since a write could otherwise land in, or reach into, the wrong one.
+    pub fn writing_tenant(&self, column: &TenantColumn) -> Result<Value, QueryError> {
+        match self.tenant_scope(column)? {
+            TenantScope::Only(mut tenants) if tenants.len() == 1 => tenants
+                .pop()
+                .ok_or_else(|| QueryError::internal("no tenant")),
+            _ => Err(QueryError::forbidden("a write needs exactly one tenant")),
+        }
     }
 
     /// An element restricted to `groups` is visible when the user belongs to one of them.

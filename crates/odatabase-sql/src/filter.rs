@@ -1,11 +1,12 @@
 //! Translation of bound expressions to SQL, and the table frames they refer to.
 
 use crate::context::TableRef;
+use crate::context::TenantScope;
 use crate::values::{enum_bits, to_sea};
 use crate::{ClaimValue, Dialect, QueryContext, QueryError};
 use odatabase_edm::{
-    ColumnPair, EntityType, Inheritance, NavigationProperty, PrimitiveKind, Property, TypeKind,
-    Value,
+    ColumnPair, EntityType, Inheritance, NavigationProperty, PrimitiveKind, Property, TenantColumn,
+    TypeKind, Value,
 };
 use odatabase_uri::{
     BinaryOp, Expr as UExpr, ExprType, Func, LambdaKind, Path, PathRoot, Step, is_temporal,
@@ -260,11 +261,55 @@ impl<'a> Translator<'a> {
                 })?;
                 out.extend(ext.condition(&table, self.ctx.claims)?);
             }
+            if let Some(tenant) = &ty.tenant {
+                let column = col(self.owner_alias(frame, &ty.name), &tenant.column);
+                out.extend(self.tenant_condition(tenant, column)?);
+            }
             for p in &ty.properties {
                 self.protect(frame, p, &ty.name, "", &mut out)?;
             }
         }
         Ok(out)
+    }
+
+    fn tenant_condition(
+        &self,
+        tenant: &TenantColumn,
+        column: Expr,
+    ) -> Result<Option<Expr>, QueryError> {
+        let TenantScope::Only(tenants) = self.ctx.claims.tenant_scope(tenant)? else {
+            return Ok(None);
+        };
+        let mut any: Option<Expr> = None;
+        for value in &tenants {
+            let cond = column.clone().eq(self.literal(value)?);
+            any = Some(match any {
+                Some(prev) => prev.or(cond),
+                None => cond,
+            });
+        }
+        Ok(any)
+    }
+
+    /// Scopes a collection or join table. Its owner's key may only be unique within a tenant,
+    /// so matching on that key alone would reach rows of other tenants.
+    pub fn side_table_tenant(
+        &self,
+        owner: &str,
+        alias: &str,
+        column: Option<&String>,
+    ) -> Result<Option<Expr>, QueryError> {
+        let (Some(column), Some(tenant)) = (column, self.ctx.model.tenant_of(owner)) else {
+            return Ok(None);
+        };
+        self.tenant_condition(tenant, col(alias, column))
+    }
+
+    fn entity_of(frame: &Frame) -> &str {
+        match &frame.kind {
+            FrameKind::Entity(t) => t,
+            _ => "",
+        }
     }
 
     fn protect(
@@ -326,6 +371,7 @@ impl<'a> Translator<'a> {
                     [column.clone(), Expr::val(pattern)],
                 )
             }
+            ClaimValue::Any => Expr::val(true),
             ClaimValue::Equals(v) => column.clone().eq(bind(v)?),
             ClaimValue::Range(low, high) => column
                 .clone()
@@ -425,6 +471,11 @@ impl<'a> Translator<'a> {
                 on,
             );
             for cond in far {
+                sel.and_where(cond);
+            }
+            let owner = Self::entity_of(source);
+            let tenant = self.side_table_tenant(owner, &j, jt.tenant_column.as_ref())?;
+            if let Some(cond) = tenant {
                 sel.and_where(cond);
             }
             return Ok(());
@@ -608,6 +659,11 @@ impl<'a> Translator<'a> {
                 .map(|p| equal(&source.alias, &p.source, &link, &p.target));
             let first =
                 and_all(conditions).ok_or_else(|| QueryError::internal("empty join table"))?;
+            let owner = Self::entity_of(source);
+            let first = match self.side_table_tenant(owner, &link, jt.tenant_column.as_ref())? {
+                Some(cond) => first.and(cond),
+                None => first,
+            };
             sel.join_as(
                 kind,
                 Alias::new(jt.table.as_str()),
@@ -884,6 +940,11 @@ impl<'a> Translator<'a> {
                     q.expr(Expr::col(Asterisk).count());
                     q.from_as(Alias::new(c.table.as_str()), Alias::new(alias.as_str()));
                     self.owner_condition(&mut q, frame, &c.owner, &alias);
+                    let owner = Self::entity_of(frame);
+                    let tenant = self.side_table_tenant(owner, &alias, c.tenant_column.as_ref())?;
+                    if let Some(cond) = tenant {
+                        q.and_where(cond);
+                    }
                     return Ok(sub(q));
                 }
                 if p.description.is_some() {
@@ -1001,6 +1062,11 @@ impl<'a> Translator<'a> {
                     q.expr(Expr::val(1));
                     q.from_as(Alias::new(c.table.as_str()), Alias::new(alias.as_str()));
                     self.owner_condition(&mut q, frame, &c.owner, &alias);
+                    let owner = Self::entity_of(frame);
+                    let tenant = self.side_table_tenant(owner, &alias, c.tenant_column.as_ref())?;
+                    if let Some(cond) = tenant {
+                        q.and_where(cond);
+                    }
                     let kind_of = match &p.kind {
                         TypeKind::Complex(t) => FrameKind::Complex {
                             type_name: t.clone(),

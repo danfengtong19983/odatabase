@@ -122,7 +122,7 @@ impl Service {
         req: &ODataRequest,
         cast: Option<&str>,
     ) -> Result<ODataResponse, ODataError> {
-        let session = Session::from(self.inner.database.clone());
+        let session = self.reader(req).await?;
         let sources = self.all_sources(req, &session, cast).await?;
         let Some((first, ..)) = sources.first() else {
             return Err(ODataError::not_found("no entity set matches"));
@@ -216,6 +216,7 @@ impl Service {
             );
             body.insert("@odata.nextLink".into(), link.into());
         }
+        session.commit().await?;
         Ok(ODataResponse::json(
             StatusCode::OK,
             format.content_type(),
@@ -232,7 +233,7 @@ impl Service {
         let limits = self.inner.config.uri_limits;
         let (sets, o) = odatabase_uri::parse_crossjoin(model, names, &req.query, limits)?;
         let format = Format::negotiate(o.format.as_deref(), &req.headers)?;
-        let session = Session::from(self.inner.database.clone());
+        let session = self.reader(req).await?;
         let lang = language(req, &self.inner.config.default_language);
         let ctx = self.query_context(req, &lang, &session);
         let page = self.inner.paging.page(&PageRequest {
@@ -317,6 +318,7 @@ impl Service {
             );
             body.insert("@odata.nextLink".into(), link.into());
         }
+        session.commit().await?;
         Ok(ODataResponse::json(
             StatusCode::OK,
             format.content_type(),

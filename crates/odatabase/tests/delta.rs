@@ -566,12 +566,13 @@ async fn outside_writers(h: Harness) {
     record_change(
         &session,
         "Labels",
+        None,
         "(Code=2,TaskId='a')",
         ChangeKind::Updated,
     )
     .await
     .unwrap();
-    record_change(&session, "Labels", "not a key", ChangeKind::Updated)
+    record_change(&session, "Labels", None, "not a key", ChangeKind::Updated)
         .await
         .unwrap();
     let doc = h.app.ok(&link).await;
@@ -914,7 +915,7 @@ macro_rules! scenarios {
 /// whose read happened in between.
 async fn commits_out_of_order(h: Harness) {
     let slow = Session::begin(&h.db).await.unwrap();
-    record_change(&slow, "Tasks", "('a')", ChangeKind::Updated)
+    record_change(&slow, "Tasks", None, "('a')", ChangeKind::Updated)
         .await
         .unwrap();
     h.done(Method::PATCH, "Tasks('b')", json!({"Title": "Fast"}))

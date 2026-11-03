@@ -176,12 +176,12 @@ impl Service {
         list: Vec<SubRequest>,
         ids: &mut HashMap<String, String>,
     ) -> Vec<Reply> {
-        let session = match Session::begin(&self.inner.database).await {
+        let session = match self.begin(req).await {
             Ok(s) => s,
             Err(e) => {
                 return vec![Reply {
                     id: None,
-                    response: ODataError::from(e).to_response(),
+                    response: e.to_response(),
                 }];
             }
         };

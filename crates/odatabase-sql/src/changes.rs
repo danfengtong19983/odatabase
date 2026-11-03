@@ -22,8 +22,10 @@ CREATE TABLE IF NOT EXISTS odata_changes (
   entity_set TEXT NOT NULL,
   entity_key TEXT NOT NULL,
   kind CHAR(1) NOT NULL CHECK (kind IN ('C', 'U', 'D', 'P')),
-  changed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  changed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  tenant TEXT
 );
+ALTER TABLE odata_changes ADD COLUMN IF NOT EXISTS tenant TEXT;
 CREATE INDEX IF NOT EXISTS odata_changes_read ON odata_changes (entity_set, stamp, id);
 ";
 
@@ -33,7 +35,8 @@ CREATE TABLE IF NOT EXISTS odata_changes (
   entity_set TEXT NOT NULL,
   entity_key TEXT NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('C', 'U', 'D', 'P')),
-  changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  tenant TEXT
 );
 CREATE INDEX IF NOT EXISTS odata_changes_read ON odata_changes (entity_set, id);
 ";
@@ -86,6 +89,7 @@ fn int(row: &[Value], i: usize) -> Result<i64, QueryError> {
 pub async fn record_change(
     session: &Session,
     set: &str,
+    tenant: Option<&str>,
     key: &str,
     kind: ChangeKind,
 ) -> Result<(), QueryError> {
@@ -93,10 +97,16 @@ pub async fn record_change(
     q.into_table(Alias::new(TABLE))
         .columns([
             Alias::new("entity_set"),
+            Alias::new("tenant"),
             Alias::new("entity_key"),
             Alias::new("kind"),
         ])
-        .values_panic([set.into(), key.into(), kind.code().into()]);
+        .values_panic([
+            set.into(),
+            tenant.map(str::to_owned).into(),
+            key.into(),
+            kind.code().into(),
+        ]);
     session.affected(&q).await?;
     Ok(())
 }
@@ -130,10 +140,12 @@ pub async fn change_floor(session: &Session) -> Result<i64, QueryError> {
     })
 }
 
-/// The changes of `set` from position `since`, after row `after`, oldest first.
+/// The changes of `set` from position `since`, after row `after`, oldest first. With `tenants`,
+/// only theirs: a row of another tenant would otherwise come back as a removed key.
 pub async fn read_changes(
     session: &Session,
     set: &str,
+    tenants: Option<&[String]>,
     since: i64,
     after: i64,
     limit: u64,
@@ -150,6 +162,9 @@ pub async fn read_changes(
     .and_where(column("id").gt(after))
     .order_by(Alias::new("id"), Order::Asc)
     .limit(limit);
+    if let Some(tenants) = tenants {
+        q.and_where(column("tenant").is_in(tenants.iter().map(String::as_str)));
+    }
     let decode = [
         ColumnDecode::Primitive(PrimitiveKind::Int64),
         ColumnDecode::Natural,
@@ -187,6 +202,14 @@ impl Database {
             #[cfg(feature = "sqlite")]
             Self::Sqlite(p) => {
                 sqlx::raw_sql(SQLITE_TABLE).execute(p).await?;
+                // SQLite has no `ADD COLUMN IF NOT EXISTS`, for a log from before tenants.
+                let added = sqlx::raw_sql("ALTER TABLE odata_changes ADD COLUMN tenant TEXT")
+                    .execute(p)
+                    .await;
+                match added {
+                    Err(e) if !e.to_string().contains("duplicate column") => Err(e)?,
+                    _ => {}
+                }
             }
         }
         Ok(())

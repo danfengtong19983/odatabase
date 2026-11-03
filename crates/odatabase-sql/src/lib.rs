@@ -22,7 +22,7 @@ pub use aggregate::read_aggregated;
 pub use changes::{
     ChangeKind, LoggedChange, change_floor, change_position, read_changes, record_change,
 };
-pub use context::{ClaimValue, Claims, QueryContext, QueryExtension, TableRef};
+pub use context::{ClaimValue, Claims, QueryContext, QueryExtension, TableRef, TenantScope};
 pub use crossjoin::{CrossJoinRow, count_crossjoin, read_crossjoin};
 #[cfg(feature = "postgres")]
 pub use db::PostgresOptions;

@@ -14,8 +14,8 @@ use crate::{ODataError, ODataRequest, ODataResponse, Service};
 use http::{HeaderValue, StatusCode};
 use odatabase_edm::{Model, TypeKind, Value};
 use odatabase_sql::{
-    ChangeKind, Page, ReadRequest, Session, change_floor, change_position, read_changes,
-    read_entities, record_change,
+    ChangeKind, Page, ReadRequest, Session, TenantScope, change_floor, change_position,
+    read_changes, read_entities, record_change,
 };
 use odatabase_uri::{
     BinaryOp, Expr, ExprType, ODataUri, Path, PathRoot, QueryOptions, Segment, SelectItem, Step,
@@ -236,6 +236,7 @@ impl Service {
     /// Notes a change in the transaction of `session`, if its type is tracked.
     pub(crate) async fn record(
         &self,
+        req: &ODataRequest,
         session: &Session,
         type_name: &str,
         key: &[(String, Value)],
@@ -247,7 +248,11 @@ impl Service {
         }
         let set = set_of(model, type_name)
             .ok_or_else(|| ODataError::new(500, format!("{type_name} has no entity set")))?;
-        record_change(session, set, &key_text(key), kind).await?;
+        let tenant = match model.tenant_of(type_name) {
+            Some(column) => Some(req.claims.writing_tenant(column)?.to_text()),
+            None => None,
+        };
+        record_change(session, set, tenant.as_deref(), &key_text(key), kind).await?;
         Ok(())
     }
 
@@ -297,7 +302,17 @@ impl Service {
             claims: &req.claims,
         })?;
         let size = page.top.unwrap_or(DEFAULT_PAGE_SIZE);
-        let mut changes = read_changes(session, set, since, after, size + 1).await?;
+        let tenants = match model.tenant_of(type_name) {
+            None => None,
+            Some(column) => match req.claims.tenant_scope(column)? {
+                TenantScope::All => None,
+                TenantScope::Only(values) => {
+                    Some(values.iter().map(Value::to_text).collect::<Vec<_>>())
+                }
+            },
+        };
+        let mut changes =
+            read_changes(session, set, tenants.as_deref(), since, after, size + 1).await?;
         let more = changes.len() as u64 > size;
         changes.truncate(size as usize);
 
