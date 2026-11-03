@@ -881,6 +881,9 @@ pub async fn read_collections(
         let mut sel = Query::select();
         let alias = tr.alias();
         sel.from_as(Alias::new(c.table.as_str()), Alias::new(alias.as_str()));
+        if let Some(cond) = tr.side_table_tenant(type_name, &alias, c.tenant_column.as_ref())? {
+            sel.and_where(cond);
+        }
         let frame = Frame {
             alias: alias.clone(),
             kind: match &p.kind {

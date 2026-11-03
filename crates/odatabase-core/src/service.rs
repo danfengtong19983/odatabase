@@ -5,7 +5,7 @@ use crate::transient::TransientCalculator;
 use crate::{ODataError, ODataRequest, ODataResponse};
 use http::Method;
 use odatabase_edm::{Annotation, AnnotationValue, EdmEntity, Model, ModelBuilder, ModelError};
-use odatabase_sql::{Database, ExpandLimits, QueryExtension};
+use odatabase_sql::{Claims, Database, ExpandLimits, QueryExtension, Session};
 use odatabase_uri::Limits;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -46,7 +46,11 @@ pub(crate) struct Inner {
     pub changes: Arc<dyn ChangeHandler>,
     pub operations: HashMap<String, Arc<dyn OperationHandler>>,
     pub calculators: HashMap<(String, String), Arc<dyn TransientCalculator>>,
+    pub session_settings: Option<SessionSettings>,
 }
+
+/// The database settings of a request, from its claims.
+pub type SessionSettings = Arc<dyn Fn(&Claims) -> Vec<(String, String)> + Send + Sync>;
 
 /// An OData service: a model bound to a database. Cheap to clone.
 #[derive(Clone)]
@@ -63,6 +67,7 @@ pub struct ServiceBuilder {
     changes: Arc<dyn ChangeHandler>,
     operations: HashMap<String, Arc<dyn OperationHandler>>,
     calculators: HashMap<(String, String), Arc<dyn TransientCalculator>>,
+    session_settings: Option<SessionSettings>,
 }
 
 impl Service {
@@ -75,7 +80,44 @@ impl Service {
             changes: Arc::new(AcceptAll),
             operations: HashMap::new(),
             calculators: HashMap::new(),
+            session_settings: None,
         }
+    }
+
+    /// A transaction for a change, with the settings of `req` applied.
+    pub(crate) async fn begin(&self, req: &ODataRequest) -> Result<Session, ODataError> {
+        let session = Session::begin(&self.inner.database).await?;
+        self.apply_settings(req, &session).await?;
+        Ok(session)
+    }
+
+    /// A session for a read. With settings it has to be a transaction, since they end with one.
+    pub(crate) async fn reader(&self, req: &ODataRequest) -> Result<Session, ODataError> {
+        if self.settings_apply() {
+            return self.begin(req).await;
+        }
+        Ok(Session::from(self.inner.database.clone()))
+    }
+
+    fn settings_apply(&self) -> bool {
+        self.inner.session_settings.is_some()
+            && self.inner.database.dialect() == odatabase_sql::Dialect::Postgres
+    }
+
+    async fn apply_settings(
+        &self,
+        req: &ODataRequest,
+        session: &Session,
+    ) -> Result<(), ODataError> {
+        if !self.settings_apply() {
+            return Ok(());
+        }
+        if let Some(settings) = &self.inner.session_settings {
+            for (name, value) in settings(&req.claims) {
+                session.set_local(&name, &value).await?;
+            }
+        }
+        Ok(())
     }
 
     pub fn model(&self) -> &Model {
@@ -205,6 +247,17 @@ impl ServiceBuilder {
 
     pub fn config(mut self, config: Config) -> Self {
         self.config = config;
+        self
+    }
+
+    /// Database settings for each request, for row-level security policies to read with
+    /// `current_setting`. They last one transaction, so every read runs in one too. Ignored on
+    /// SQLite, which has no such settings.
+    pub fn session_settings(
+        mut self,
+        settings: impl Fn(&Claims) -> Vec<(String, String)> + Send + Sync + 'static,
+    ) -> Self {
+        self.session_settings = Some(Arc::new(settings));
         self
     }
 
@@ -365,6 +418,7 @@ impl ServiceBuilder {
                 changes: self.changes,
                 operations: self.operations,
                 calculators: self.calculators,
+                session_settings: self.session_settings,
             }),
         })
     }

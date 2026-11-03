@@ -113,6 +113,54 @@ SQLite is well suited to tests and small services, with these limits:
 - Date arithmetic is exact to the millisecond, not the microsecond.
 - `matchesPattern` and table functions return 501.
 
+### Multi-tenancy
+
+Mark the column that says which tenant a row belongs to:
+
+```rust
+#[derive(ODataEntity)]
+struct Deal {
+    #[odata(tenant)]
+    tenant_id: Uuid,
+    #[odata(key)]
+    id: i32,
+    #[odata(collection(table = "deal_tag", owner(id = "deal_id"), value_column = "tag",
+                       tenant_column = "tenant_id"))]
+    tags: Vec<String>,
+}
+```
+
+The column isn't part of the model, so clients can't see it, filter on it or send it. Every read is
+limited to the `tenant` claim (or the one named by `tenant(claim = "...")`), wherever the type is
+reached from, inserts are stamped with it, and every keyed `UPDATE` and `DELETE` includes it. A key
+therefore only has to be unique within a tenant.
+
+- **Claims.** A request without the claim gets a 403. Several values read several tenants, and
+  `ClaimValue::Any` reads all of them, for operators. A write needs exactly one tenant.
+- **Collection and join tables.** Give them `tenant_column` when they have a tenant column of their
+  own, which is required if their owner's key is only unique within a tenant. Without it, those
+  tables are matched by the owner's key alone.
+- **Unlike row protection,** tenancy allows upserts and change tracking: a tenant's rows aren't
+  hidden from it, and the change log keeps each tenant's changes apart. If a key is unique across
+  tenants, a client that picks one another tenant holds gets a 409, so include the tenant in the key.
+
+To have the database enforce it as well, connect as a role that doesn't own the tables and pass the
+settings your row-level security policies read:
+
+```rust
+Service::builder("Shop")
+    .entity::<Deal>()
+    .session_settings(|claims| match claims.values.get("tenant").and_then(|v| v.first()) {
+        Some(ClaimValue::Equals(tenant)) => vec![("app.tenant_id".into(), tenant.to_text())],
+        _ => Vec::new(),
+    })
+```
+
+Settings last one transaction, so with them every read runs in a transaction too, which adds a round
+trip or two per request and runs a request's concurrent `$expand` queries one at a time. A row the
+policy refuses answers 403. On SQLite the settings are ignored. The application role also needs
+access to `odata_changes` if it tracks changes.
+
 ### Change tracking
 
 Mark an entity with `#[odata(track_changes)]` and create the log once at startup:
@@ -150,6 +198,8 @@ the entities that changed since, in their current state, and an entry with `reas
   `$top`, `$skip`, `$expand`, `$apply`, navigation paths, and filters on related entities or
   composable functions get a normal response: the preference is ignored, as the protocol allows.
   Links between entities aren't reported, only changes to the entities themselves.
+- **Tenants.** A trigger for a type with a tenant also fills the log's `tenant` column, or the
+  change reaches no one.
 - **Hidden rows.** A type with row protection or a query extension can't be tracked, and `build`
   says so: a removal entry would reveal the key of a row the caller can't see.
 - **Retention.** Call `database.prune_change_log(age)` on a schedule. A link older than that gets

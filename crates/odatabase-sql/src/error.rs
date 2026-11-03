@@ -61,6 +61,8 @@ fn database_status(e: &sqlx::Error) -> (u16, String) {
             "23503" | "787" => return (409, "a referenced entity is missing or in use".into()),
             "23502" | "1299" => return (400, "a required property is missing".into()),
             "22012" => return (400, "division by zero".into()),
+            // A row-level security policy refused the row.
+            "42501" => return (403, "the row is not accessible".into()),
             "57014" => return (503, "the query took too long".into()),
             // SQLite writers collided: busy, locked, and a stale read snapshot.
             "5" | "6" | "517" | "261" => return (503, "the service is busy".into()),

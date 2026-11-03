@@ -15,7 +15,7 @@ use odatabase_edm::{
     EntityType, Inheritance, Model, NavigationProperty, PrimitiveKind, Property, TypeKind, Value,
 };
 use odatabase_sql::{
-    ChangeKind, ColumnValue, ColumnWrite, Page, ReadRequest, Session, collection_positions,
+    ChangeKind, Claims, ColumnValue, ColumnWrite, Page, ReadRequest, Session, collection_positions,
     delete as sql_delete, insert as sql_insert, open_position, read_columns, read_entities,
     update as sql_update,
 };
@@ -198,19 +198,26 @@ fn key_segment(type_name: &str, key: &EntityKey) -> Segment {
 }
 
 /// The column conditions for a key.
+/// The columns naming one row. A key can be unique only within a tenant, so the tenant is one.
 fn key_conditions(
     model: &Model,
+    claims: &Claims,
     type_name: &str,
     key: &EntityKey,
 ) -> Result<Vec<ColumnValue>, ODataError> {
-    key.iter()
+    let mut conditions = key
+        .iter()
         .map(|(name, value)| {
             model
                 .property(type_name, name)
                 .map(|p| (p.column.clone(), value.clone()))
                 .ok_or_else(|| ODataError::new(500, format!("unknown key {name}")))
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    if let Some(tenant) = model.tenant_of(type_name) {
+        conditions.push((tenant.column.clone(), claims.writing_tenant(tenant)?));
+    }
+    Ok(conditions)
 }
 
 /// The owner path, owner type, navigation and keyed segment of a `$ref` path.
@@ -244,7 +251,7 @@ impl Service {
         req: &ODataRequest,
         uri: &ODataUri,
     ) -> Result<ODataResponse, ODataError> {
-        let session = Session::begin(&self.inner.database).await?;
+        let session = self.begin(req).await?;
         let outcome = async {
             let response = self.modify_in(req, uri, &session).await?;
             self.inner
@@ -483,6 +490,14 @@ impl Service {
             let l = layout(model, type_name)?;
             let mut writes = TableWrites::default();
             writes.columns(&l.root);
+            if let Some(tenant) = model.tenant_of(type_name) {
+                let value = req.claims.writing_tenant(tenant)?;
+                let kind = TypeKind::Primitive(tenant.kind);
+                writes.push(
+                    &l.root,
+                    ColumnWrite::new(tenant.column.clone(), value, Some(kind)),
+                );
+            }
             let restricted = row_restricted(model, type_name);
             if restricted && let Some(key) = child_key(model, payload, &parent_columns) {
                 let segs = [key_segment(type_name, &key)];
@@ -692,7 +707,7 @@ impl Service {
                     }
                 }
             }
-            self.record(session, type_name, &key, ChangeKind::Created)
+            self.record(req, session, type_name, &key, ChangeKind::Created)
                 .await?;
             Ok(key)
         })
@@ -759,9 +774,10 @@ impl Service {
             .collect();
         let key = self.entity_key(req, session, &segs, &t).await?;
         let l = layout(model, &t)?;
-        let conditions = key_conditions(model, &t, &key)?;
+        let conditions = key_conditions(model, &req.claims, &t, &key)?;
         sql_update(model, session, &l.root, &sets, None, &conditions).await?;
-        self.record(session, &t, &key, ChangeKind::Updated).await?;
+        self.record(req, session, &t, &key, ChangeKind::Updated)
+            .await?;
         Ok(())
     }
 
@@ -794,6 +810,12 @@ impl Service {
         for (p, v) in jt.target.iter().zip(target_values) {
             row.push(ColumnWrite::new(p.source.clone(), v, None));
         }
+        row.extend(tenant_cell(
+            &self.inner.model,
+            &req.claims,
+            source_type,
+            jt.tenant_column.as_ref(),
+        )?);
         sql_insert(&self.inner.model, session, &jt.table, &row, &[]).await?;
         Ok(())
     }
@@ -846,25 +868,42 @@ impl Service {
             .await?
             .ok_or_else(|| ODataError::not_found("the entity does not exist"))?;
         if clear_first {
-            let conditions: Vec<ColumnValue> = c
+            let mut conditions: Vec<ColumnValue> = c
                 .owner
                 .iter()
                 .map(|o| o.target.clone())
                 .zip(owner_values.iter().cloned())
                 .collect();
+            conditions.extend(side_table_key(
+                model,
+                &req.claims,
+                type_name,
+                c.tenant_column.as_ref(),
+            )?);
             sql_delete(model, session, &c.table, &conditions).await?;
         }
         for (i, item) in items.iter().enumerate() {
-            self.write_item(session, p, &owner_values, item, i as i32 + 1)
-                .await?;
+            self.write_item(
+                req,
+                session,
+                type_name,
+                p,
+                &owner_values,
+                item,
+                i as i32 + 1,
+            )
+            .await?;
         }
         Ok(())
     }
 
     /// Inserts one row of a collection property.
+    #[allow(clippy::too_many_arguments)]
     async fn write_item(
         &self,
+        req: &ODataRequest,
         session: &Session,
+        type_name: &str,
         p: &Property,
         owner_values: &[Value],
         item: &PropertyValue,
@@ -878,6 +917,12 @@ impl Service {
             .zip(owner_values)
             .map(|(o, v)| ColumnWrite::new(o.target.clone(), v.clone(), None))
             .collect();
+        cols.extend(tenant_cell(
+            model,
+            &req.claims,
+            type_name,
+            c.tenant_column.as_ref(),
+        )?);
         if let Some(order) = &c.order_column {
             cols.push(ColumnWrite::new(
                 order.clone(),
@@ -944,12 +989,18 @@ impl Service {
             .column_values(req, session, &segs, &t, &owner_cols)
             .await?
             .ok_or_else(|| ODataError::not_found("the entity does not exist"))?;
-        let owner: Vec<ColumnValue> = c
+        let mut owner: Vec<ColumnValue> = c
             .owner
             .iter()
             .map(|o| o.target.clone())
             .zip(owner_values.iter().cloned())
             .collect();
+        owner.extend(side_table_key(
+            model,
+            &req.claims,
+            &t,
+            c.tenant_column.as_ref(),
+        )?);
         let position = match (&c.order_column, uri.options.index) {
             (Some(order), index) => {
                 let used = collection_positions(model, session, &c.table, &owner, order).await?;
@@ -975,10 +1026,26 @@ impl Service {
             }
             (None, None) => 0,
         };
-        self.write_item(session, leaf, &owner_values, &item, position as i32)
-            .await?;
-        self.apply_update(session, &t, &key, version, TableWrites::default(), false)
-            .await?;
+        self.write_item(
+            req,
+            session,
+            &t,
+            leaf,
+            &owner_values,
+            &item,
+            position as i32,
+        )
+        .await?;
+        self.apply_update(
+            req,
+            session,
+            &t,
+            &key,
+            version,
+            TableWrites::default(),
+            false,
+        )
+        .await?;
         Ok(ODataResponse::new(StatusCode::NO_CONTENT))
     }
 
@@ -1021,8 +1088,10 @@ impl Service {
     }
 
     /// Applies column changes, bumping the version and guarding against concurrent writers.
+    #[allow(clippy::too_many_arguments)]
     async fn apply_update(
         &self,
+        req: &ODataRequest,
         session: &Session,
         type_name: &str,
         key: &EntityKey,
@@ -1032,7 +1101,7 @@ impl Service {
     ) -> Result<(), ODataError> {
         let model = &self.inner.model;
         let l = layout(model, type_name)?;
-        let conditions = key_conditions(model, type_name, key)?;
+        let conditions = key_conditions(model, &req.claims, type_name, key)?;
         let etag = model.etag_property(type_name);
         let (bump, stamp) = match etag {
             Some(p) if matches!(p.kind, TypeKind::Primitive(k) if k.is_integer()) => {
@@ -1080,7 +1149,7 @@ impl Service {
                 return Err(ODataError::new(412, "the entity was changed concurrently"));
             }
         }
-        self.record(session, type_name, key, ChangeKind::Updated)
+        self.record(req, session, type_name, key, ChangeKind::Updated)
             .await
     }
 
@@ -1290,7 +1359,7 @@ impl Service {
                 }
             }
         }
-        self.apply_update(session, type_name, key, version, writes, guarded)
+        self.apply_update(req, session, type_name, key, version, writes, guarded)
             .await?;
         for p in model.all_properties(type_name) {
             if let (Some(_), Some(PropertyValue::Collection(items))) =
@@ -1768,9 +1837,9 @@ impl Service {
             .collect();
         if !moved.is_empty() {
             let l = layout(model, &child.type_name)?;
-            let conditions = key_conditions(model, &child.type_name, &key)?;
+            let conditions = key_conditions(model, &req.claims, &child.type_name, &key)?;
             sql_update(model, session, &l.root, &moved, None, &conditions).await?;
-            self.record(session, &child.type_name, &key, ChangeKind::Updated)
+            self.record(req, session, &child.type_name, &key, ChangeKind::Updated)
                 .await?;
         }
         Ok(key)
@@ -1898,6 +1967,12 @@ impl Service {
                 .await?
                 .ok_or_else(|| ODataError::not_found("the related entity does not exist"))?;
             conditions.extend(jt.target.iter().map(|p| p.source.clone()).zip(values));
+            conditions.extend(side_table_key(
+                model,
+                &req.claims,
+                parent_type,
+                jt.tenant_column.as_ref(),
+            )?);
             sql_delete(model, session, &jt.table, &conditions).await?;
             return Ok(());
         }
@@ -1930,9 +2005,10 @@ impl Service {
             })
             .collect();
         let l = layout(model, target)?;
-        let conditions = key_conditions(model, target, key)?;
+        let conditions = key_conditions(model, &req.claims, target, key)?;
         sql_update(model, session, &l.root, &sets, None, &conditions).await?;
-        self.record(session, target, key, ChangeKind::Updated).await
+        self.record(req, session, target, key, ChangeKind::Updated)
+            .await
     }
 
     /// The response of an update: empty, unless a representation was asked for.
@@ -2015,7 +2091,7 @@ impl Service {
             writes.push(&l.root, ColumnWrite::new(column.clone(), mime, Some(text)));
         }
         let guarded = req.headers.contains_key(header::IF_MATCH);
-        self.apply_update(session, t, &key, version, writes, guarded)
+        self.apply_update(req, session, t, &key, version, writes, guarded)
             .await?;
         Ok(ODataResponse::new(StatusCode::NO_CONTENT))
     }
@@ -2093,8 +2169,16 @@ impl Service {
         if let PropertyValue::Collection(items) = &value {
             self.write_collection(req, session, &t, leaf, &key, items, true)
                 .await?;
-            self.apply_update(session, &t, &key, version, TableWrites::default(), false)
-                .await?;
+            self.apply_update(
+                req,
+                session,
+                &t,
+                &key,
+                version,
+                TableWrites::default(),
+                false,
+            )
+            .await?;
             return Ok(ODataResponse::new(StatusCode::NO_CONTENT));
         }
         let mut writes = TableWrites::default();
@@ -2114,7 +2198,7 @@ impl Service {
             writes.columns(&table),
         )?;
         let guarded = req.headers.contains_key(header::IF_MATCH);
-        self.apply_update(session, &t, &key, version, writes, guarded)
+        self.apply_update(req, session, &t, &key, version, writes, guarded)
             .await?;
         Ok(ODataResponse::new(StatusCode::NO_CONTENT))
     }
@@ -2164,7 +2248,8 @@ impl Service {
         if leaf.collection.is_some() {
             self.write_collection(req, session, &t, leaf, &key, &[], true)
                 .await?;
-            self.record(session, &t, &key, ChangeKind::Updated).await?;
+            self.record(req, session, &t, &key, ChangeKind::Updated)
+                .await?;
             return Ok(ODataResponse::new(StatusCode::NO_CONTENT));
         }
         if !leaf.nullable {
@@ -2187,7 +2272,7 @@ impl Service {
         let mut writes = TableWrites::default();
         flatten(model, leaf, &prefix, &nulled, true, writes.columns(&table))?;
         let guarded = req.headers.contains_key(header::IF_MATCH);
-        self.apply_update(session, &t, &key, version, writes, guarded)
+        self.apply_update(req, session, &t, &key, version, writes, guarded)
             .await?;
         Ok(ODataResponse::new(StatusCode::NO_CONTENT))
     }
@@ -2231,17 +2316,23 @@ impl Service {
                     .column_values(req, session, &segs, type_name, &cols)
                     .await?
                     .ok_or_else(|| ODataError::not_found("the entity does not exist"))?;
-                let conditions: Vec<ColumnValue> = jt
+                let mut conditions: Vec<ColumnValue> = jt
                     .source
                     .iter()
                     .map(|p| p.target.clone())
                     .zip(values)
                     .collect();
+                conditions.extend(side_table_key(
+                    model,
+                    &req.claims,
+                    type_name,
+                    jt.tenant_column.as_ref(),
+                )?);
                 sql_delete(model, session, &jt.table, &conditions).await?;
             }
         }
         let l = layout(model, type_name)?;
-        let conditions = key_conditions(model, type_name, key)?;
+        let conditions = key_conditions(model, &req.claims, type_name, key)?;
         for owner in &l.own {
             if let Some(Inheritance::Joined { join, .. }) = &owner.inheritance {
                 let cols: Vec<String> = join.iter().map(|p| p.source.clone()).collect();
@@ -2258,7 +2349,7 @@ impl Service {
         if n == 0 {
             return Err(ODataError::not_found("the entity does not exist"));
         }
-        self.record(session, type_name, key, ChangeKind::Deleted)
+        self.record(req, session, type_name, key, ChangeKind::Deleted)
             .await
     }
 
@@ -2337,7 +2428,7 @@ impl Service {
         for (pair, value) in nav.join.iter().zip(values) {
             writes.push(&l.root, ColumnWrite::new(pair.source.clone(), value, None));
         }
-        self.apply_update(session, &owner, &key, version, writes, false)
+        self.apply_update(req, session, &owner, &key, version, writes, false)
             .await?;
         Ok(ODataResponse::new(StatusCode::NO_CONTENT))
     }
@@ -2393,6 +2484,12 @@ impl Service {
                 .await?
                 .ok_or_else(|| ODataError::not_found("the target does not exist"))?;
             conditions.extend(jt.target.iter().map(|p| p.source.clone()).zip(values));
+            conditions.extend(side_table_key(
+                model,
+                &req.claims,
+                &owner,
+                jt.tenant_column.as_ref(),
+            )?);
             sql_delete(model, session, &jt.table, &conditions).await?;
             return Ok(ODataResponse::new(StatusCode::NO_CONTENT));
         }
@@ -2409,7 +2506,7 @@ impl Service {
             let l = layout(model, &owner)?;
             let cols = nav.join.iter().map(|p| p.source.clone()).collect();
             let writes = clear(cols, &l.root, &owner);
-            self.apply_update(session, &owner, &key, version, writes, false)
+            self.apply_update(req, session, &owner, &key, version, writes, false)
                 .await?;
             return Ok(ODataResponse::new(StatusCode::NO_CONTENT));
         }
@@ -2419,10 +2516,38 @@ impl Service {
         let l = layout(model, &t)?;
         let cols = nav.join.iter().map(|p| p.target.clone()).collect();
         let writes = clear(cols, &l.root, &t);
-        self.apply_update(session, &t, &key, version, writes, false)
+        self.apply_update(req, session, &t, &key, version, writes, false)
             .await?;
         Ok(ODataResponse::new(StatusCode::NO_CONTENT))
     }
+}
+
+/// The tenant as a condition on a collection or join table, for an owner that has one.
+fn side_table_key(
+    model: &Model,
+    claims: &Claims,
+    owner: &str,
+    column: Option<&String>,
+) -> Result<Option<ColumnValue>, ODataError> {
+    let (Some(column), Some(tenant)) = (column, model.tenant_of(owner)) else {
+        return Ok(None);
+    };
+    Ok(Some((column.clone(), claims.writing_tenant(tenant)?)))
+}
+
+/// The tenant of a row in a collection or join table, for an owner that has one.
+fn tenant_cell(
+    model: &Model,
+    claims: &Claims,
+    owner: &str,
+    column: Option<&String>,
+) -> Result<Option<ColumnWrite>, ODataError> {
+    let (Some(column), Some(tenant)) = (column, model.tenant_of(owner)) else {
+        return Ok(None);
+    };
+    let kind = TypeKind::Primitive(tenant.kind);
+    let value = claims.writing_tenant(tenant)?;
+    Ok(Some(ColumnWrite::new(column.clone(), value, Some(kind))))
 }
 
 /// Key conditions for `table`: a `Joined` table holds the key under its own column names.

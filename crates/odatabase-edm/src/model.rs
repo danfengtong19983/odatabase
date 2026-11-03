@@ -95,6 +95,12 @@ impl Model {
             .unwrap_or(&[])
     }
 
+    pub fn tenant_of(&self, type_name: &str) -> Option<&TenantColumn> {
+        self.type_chain(type_name)
+            .into_iter()
+            .find_map(|t| t.tenant.as_ref())
+    }
+
     pub fn etag_property(&self, type_name: &str) -> Option<&Property> {
         self.type_chain(type_name).into_iter().find_map(|t| {
             t.etag
@@ -133,6 +139,17 @@ pub struct EntityType {
     pub query_extension: bool,
     /// Changes go to the change log, so that reads can offer delta links.
     pub track_changes: bool,
+    /// The column that says which tenant a row belongs to.
+    pub tenant: Option<TenantColumn>,
+}
+
+/// The tenant of a row. It is no property: clients can neither see nor name it, and every
+/// statement on the table is scoped by the claim.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TenantColumn {
+    pub column: String,
+    pub claim: String,
+    pub kind: PrimitiveKind,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -284,6 +301,8 @@ pub struct CollectionTable {
     /// Value column of a primitive collection. Complex collections map their own properties.
     pub value_column: Option<String>,
     pub order_column: Option<String>,
+    /// The tenant column of the table, filled on insert when its owner has a tenant.
+    pub tenant_column: Option<String>,
 }
 
 /// A property calculated in application code from other properties.
@@ -331,6 +350,8 @@ pub struct JoinTable {
     pub source: Vec<ColumnPair>,
     /// Join table column to target table column.
     pub target: Vec<ColumnPair>,
+    /// The tenant column of the table, filled on insert when the source has a tenant.
+    pub tenant_column: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]

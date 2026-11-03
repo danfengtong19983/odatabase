@@ -188,7 +188,7 @@ pub struct NavAttr {
     pub partner: Option<String>,
     pub required: bool,
     pub contains_target: bool,
-    pub join_table: Option<(String, Pairs, Pairs)>,
+    pub join_table: Option<(String, Pairs, Pairs, Option<String>)>,
 }
 
 fn nav(meta: &ParseNestedMeta, kind: NavKind) -> Result<NavAttr> {
@@ -214,6 +214,7 @@ fn nav(meta: &ParseNestedMeta, kind: NavKind) -> Result<NavAttr> {
             n.contains_target = true;
         } else if m.path.is_ident("join_table") {
             let (mut table, mut source, mut target) = (String::new(), Vec::new(), Vec::new());
+            let mut tenant = None;
             m.parse_nested_meta(|j| {
                 if j.path.is_ident("table") {
                     table = string(&j)?;
@@ -221,12 +222,14 @@ fn nav(meta: &ParseNestedMeta, kind: NavKind) -> Result<NavAttr> {
                     source = pairs(&j)?;
                 } else if j.path.is_ident("target") {
                     target = pairs(&j)?;
+                } else if j.path.is_ident("tenant_column") {
+                    tenant = Some(string(&j)?);
                 } else {
-                    return Err(j.error("expected table, source or target"));
+                    return Err(j.error("expected table, source, target or tenant_column"));
                 }
                 Ok(())
             })?;
-            n.join_table = Some((table, source, target));
+            n.join_table = Some((table, source, target, tenant));
         } else {
             return Err(m.error("unknown navigation option"));
         }
@@ -243,6 +246,7 @@ pub struct CollectionAttr {
     pub owner: Pairs,
     pub value_column: Option<String>,
     pub order_column: Option<String>,
+    pub tenant_column: Option<String>,
 }
 
 pub struct DescriptionAttr {
@@ -272,6 +276,8 @@ pub struct FieldAttrs {
     pub collection: Option<CollectionAttr>,
     pub description: Option<DescriptionAttr>,
     pub protections: Vec<(String, bool)>,
+    /// The claim that scopes this column, from `#[odata(tenant)]`.
+    pub tenant: Option<String>,
     pub visible_for: Vec<String>,
     pub annotations: Vec<TokenStream>,
     pub nav: Option<NavAttr>,
@@ -341,6 +347,7 @@ impl FieldAttrs {
                 owner: Vec::new(),
                 value_column: None,
                 order_column: None,
+                tenant_column: None,
             };
             m.parse_nested_meta(|e| {
                 if e.path.is_ident("table") {
@@ -351,8 +358,12 @@ impl FieldAttrs {
                     c.value_column = Some(string(&e)?);
                 } else if e.path.is_ident("order_column") {
                     c.order_column = Some(string(&e)?);
+                } else if e.path.is_ident("tenant_column") {
+                    c.tenant_column = Some(string(&e)?);
                 } else {
-                    return Err(e.error("expected table, owner, value_column or order_column"));
+                    return Err(e.error(
+                        "expected table, owner, value_column, order_column or tenant_column",
+                    ));
                 }
                 Ok(())
             })?;
@@ -379,6 +390,19 @@ impl FieldAttrs {
                 Ok(())
             })?;
             f.description = Some(d);
+        } else if m.path.is_ident("tenant") {
+            let mut claim = "tenant".to_owned();
+            if m.input.peek(syn::token::Paren) {
+                m.parse_nested_meta(|e| {
+                    if e.path.is_ident("claim") {
+                        claim = string(&e)?;
+                        Ok(())
+                    } else {
+                        Err(e.error("expected claim"))
+                    }
+                })?;
+            }
+            f.tenant = Some(claim);
         } else if m.path.is_ident("protected") {
             let (mut claim, mut wildcards) = (String::new(), false);
             m.parse_nested_meta(|e| {

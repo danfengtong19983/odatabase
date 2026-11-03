@@ -84,8 +84,10 @@ impl Service {
         req: &ODataRequest,
         uri: &ODataUri,
     ) -> Result<ODataResponse, ODataError> {
-        let session = Session::from(self.inner.database.clone());
-        self.get_in(req, uri, &session).await
+        let session = self.reader(req).await?;
+        let response = self.get_in(req, uri, &session).await?;
+        session.commit().await?;
+        Ok(response)
     }
 
     /// Answers a `GET` on `session`, which is a transaction inside a change set.

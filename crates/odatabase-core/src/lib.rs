@@ -24,6 +24,7 @@ pub use change::{AcceptAll, ChangeContext, ChangeHandler, EntityKey};
 pub use format::{Format, MetadataLevel};
 #[cfg(feature = "postgres")]
 pub use odatabase_sql::PostgresOptions;
+pub use odatabase_sql::TenantScope;
 pub use odatabase_sql::{
     ClaimValue, Claims, Database, Dialect, QueryError, QueryExtension, TableRef,
 };

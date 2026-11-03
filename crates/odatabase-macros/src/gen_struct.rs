@@ -55,11 +55,13 @@ fn property(field: &Field, f: &FieldAttrs) -> Result<TokenStream> {
                 None => quote!(None),
             };
             let (value, order) = (some(&c.value_column), some(&c.order_column));
+            let tenant = some(&c.tenant_column);
             quote!(Some(::odatabase::edm::CollectionTable {
                 table: #table.to_owned(),
                 owner: #owner,
                 value_column: #value,
                 order_column: #order,
+                tenant_column: #tenant,
             }))
         }
         None => quote!(None),
@@ -172,6 +174,27 @@ pub fn entity(input: &DeriveInput) -> Result<TokenStream> {
             Some(n) => quote!(#n.to_owned()),
             None => quote!(::odatabase::edm::edm_case(#rust)),
         };
+        if let Some(claim) = &f.tenant {
+            if f.key {
+                return Err(Error::new_spanned(
+                    field,
+                    "a tenant column is no key: clients never see it",
+                ));
+            }
+            let (ty, column) = (&field.ty, f.column.clone().unwrap_or_else(|| rust.clone()));
+            body.push(quote! {
+                let ft = <#ty as ::odatabase::edm::EdmField>::field_type(b);
+                let ::odatabase::edm::TypeKind::Primitive(kind) = ft.kind else {
+                    panic!("a tenant column must be primitive");
+                };
+                t.tenant = Some(::odatabase::edm::TenantColumn {
+                    column: #column.to_owned(),
+                    claim: #claim.to_owned(),
+                    kind,
+                });
+            });
+            continue;
+        }
         if let Some(nav) = &f.nav {
             let target = nav.target.as_ref().expect("checked by the parser");
             let collection = matches!(nav.kind, NavKind::HasMany);
@@ -182,12 +205,17 @@ pub fn entity(input: &DeriveInput) -> Result<TokenStream> {
                 None => quote!(None),
             };
             let join_table = match &nav.join_table {
-                Some((table, source, tgt)) => {
+                Some((table, source, tgt, tenant)) => {
                     let (source, tgt) = (pairs_tokens(source), pairs_tokens(tgt));
+                    let tenant = match tenant {
+                        Some(s) => quote!(Some(#s.to_owned())),
+                        None => quote!(None),
+                    };
                     quote!(Some(::odatabase::edm::JoinTable {
                         table: #table.to_owned(),
                         source: #source,
                         target: #tgt,
+                        tenant_column: #tenant,
                     }))
                 }
                 None => quote!(None),

@@ -185,6 +185,19 @@ impl Session {
         Ok(())
     }
 
+    /// Sets a database setting until the transaction ends, such as what row-level security
+    /// policies read with `current_setting`. Postgres only.
+    pub async fn set_local(&self, name: &str, value: &str) -> Result<(), QueryError> {
+        let call = sea_query::Func::cust(sea_query::Alias::new("set_config"))
+            .arg(name)
+            .arg(value)
+            .arg(true);
+        let mut q = sea_query::Query::select();
+        q.expr(call);
+        self.run(&q).await?;
+        Ok(())
+    }
+
     pub async fn fetch(
         &self,
         model: &Model,

@@ -410,6 +410,10 @@ fn child_query(
                 Alias::new(j.as_str()),
                 on,
             );
+            let tenant = tr.side_table_tenant(&item.target, &j, jt.tenant_column.as_ref())?;
+            if let Some(cond) = tenant {
+                sel.and_where(cond);
+            }
             (
                 j,
                 jt.source
@@ -581,6 +585,10 @@ async fn count_children(
                 Alias::new(j.as_str()),
                 on,
             );
+            let tenant = tr.side_table_tenant(&item.target, &j, jt.tenant_column.as_ref())?;
+            if let Some(cond) = tenant {
+                sel.and_where(cond);
+            }
             (j, jt.source.iter().map(|p| p.target.as_str()).collect())
         }
         None => (

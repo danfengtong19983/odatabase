@@ -545,6 +545,7 @@ fn parameter_property(p: &Parameter) -> Result<Property, ODataError> {
             owner: Vec::new(),
             value_column: None,
             order_column: None,
+            tenant_column: None,
         });
     }
     Ok(holder)
