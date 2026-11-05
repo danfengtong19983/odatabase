@@ -1,7 +1,7 @@
 # Client conformance
 
 Runs OData clients written by other projects against
-[conformance_server](../crates/odatabase/examples/conformance_server.rs), so the server is
+[conformance_server](https://github.com/danfengtong19983/odatabase/blob/main/crates/odatabase/examples/conformance_server.rs), so the server is
 checked by code that doesn't share its assumptions. Each script starts a fresh in-memory server
 and runs the client in Docker. They aren't part of `cargo test`, but CI runs them on every change.
 A script's exit code is the client's result.

@@ -61,12 +61,16 @@ fn typed_null(model: &Model, dialect: Dialect, kind: Option<&TypeKind>) -> sea_q
 /// One column write, with the declared type of its property.
 #[derive(Clone, Debug)]
 pub struct ColumnWrite {
+    /// The database column.
     pub column: String,
+    /// The value to store.
     pub value: Value,
+    /// The property's type, which says how enums are stored. `None` for primitives.
     pub kind: Option<TypeKind>,
 }
 
 impl ColumnWrite {
+    /// A column write.
     pub fn new(column: impl Into<String>, value: Value, kind: Option<TypeKind>) -> Self {
         Self {
             column: column.into(),

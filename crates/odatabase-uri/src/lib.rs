@@ -2,6 +2,9 @@
 //!
 //! Parsing and binding are one pass: an [`ODataUri`] that exists refers only to elements of
 //! the model, so later stages never see user-chosen identifiers.
+//!
+//! Part of [odatabase](https://docs.rs/odatabase). Its API follows the needs of that crate and
+//! changes without notice: depend on `odatabase` instead.
 
 mod apply;
 mod ast;

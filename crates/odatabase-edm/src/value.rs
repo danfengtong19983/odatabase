@@ -7,7 +7,8 @@ use rust_decimal::Decimal;
 use std::str::FromStr;
 use uuid::Uuid;
 
-/// The primitive types of the entity data model.
+/// The primitive types of the entity data model. Each variant is the `Edm` type of that name.
+#[allow(missing_docs)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PrimitiveKind {
     Boolean,
@@ -35,6 +36,7 @@ pub enum PrimitiveKind {
 }
 
 impl PrimitiveKind {
+    /// The qualified name, such as `Edm.Int32`.
     pub fn edm_name(self) -> &'static str {
         match self {
             Self::Boolean => "Edm.Boolean",
@@ -62,6 +64,7 @@ impl PrimitiveKind {
         }
     }
 
+    /// The kind with this qualified name.
     pub fn from_edm_name(name: &str) -> Option<Self> {
         const ALL: [PrimitiveKind; 22] = [
             PrimitiveKind::Boolean,
@@ -90,10 +93,12 @@ impl PrimitiveKind {
         ALL.into_iter().find(|k| k.edm_name() == name)
     }
 
+    /// Integers, `Single`, `Double` and `Decimal`.
     pub fn is_numeric(self) -> bool {
         self.is_integer() || matches!(self, Self::Single | Self::Double | Self::Decimal)
     }
 
+    /// `Byte`, `SByte` and the `Int` types.
     pub fn is_integer(self) -> bool {
         matches!(
             self,
@@ -101,6 +106,7 @@ impl PrimitiveKind {
         )
     }
 
+    /// The geography and geometry types.
     pub fn is_geo(self) -> bool {
         matches!(
             self,
@@ -123,26 +129,45 @@ impl PrimitiveKind {
 /// A dynamically typed Edm value.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
+    /// The null value of any type.
     Null,
+    /// `Edm.Boolean`.
     Boolean(bool),
+    /// `Edm.Byte`.
     Byte(u8),
+    /// `Edm.SByte`.
     SByte(i8),
+    /// `Edm.Int16`.
     Int16(i16),
+    /// `Edm.Int32`.
     Int32(i32),
+    /// `Edm.Int64`.
     Int64(i64),
+    /// `Edm.Single`.
     Single(f32),
+    /// `Edm.Double`.
     Double(f64),
+    /// `Edm.Decimal`.
     Decimal(Decimal),
+    /// `Edm.String`.
     String(String),
+    /// `Edm.Date`.
     Date(NaiveDate),
+    /// `Edm.DateTimeOffset`.
     DateTimeOffset(DateTime<FixedOffset>),
+    /// `Edm.TimeOfDay`.
     TimeOfDay(NaiveTime),
+    /// `Edm.Duration`.
     Duration(TimeDelta),
+    /// `Edm.Guid`.
     Guid(Uuid),
+    /// `Edm.Binary`.
     Binary(Vec<u8>),
     /// Member of an enum type, addressed by qualified type name and member name.
     Enum {
+        /// Qualified name of the enum type.
         type_name: String,
+        /// Member name, or comma-separated names for a flags enum.
         member: String,
     },
     /// GeoJSON document of a geospatial property.
@@ -153,15 +178,19 @@ pub enum Value {
 #[derive(Debug, thiserror::Error, PartialEq)]
 #[error("invalid {kind} value: {text}")]
 pub struct ValueError {
+    /// The Edm type name.
     pub kind: &'static str,
+    /// The text that failed.
     pub text: String,
 }
 
 impl Value {
+    /// Whether the value is null.
     pub fn is_null(&self) -> bool {
         matches!(self, Self::Null)
     }
 
+    /// The primitive kind, or `None` for null, enum and geospatial values.
     pub fn kind(&self) -> Option<PrimitiveKind> {
         Some(match self {
             Self::Null | Self::Enum { .. } | Self::Geo(_) => return None,
@@ -305,6 +334,7 @@ impl Value {
         }
     }
 
+    /// Any integer value as `i64`.
     pub fn as_i64(&self) -> Option<i64> {
         match self {
             Self::Byte(v) => Some(i64::from(*v)),
@@ -316,6 +346,7 @@ impl Value {
         }
     }
 
+    /// A string value.
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Self::String(v) => Some(v),

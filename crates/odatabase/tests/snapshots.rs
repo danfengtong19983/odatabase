@@ -3,8 +3,8 @@
 mod common;
 
 use odatabase::edm::{Model, to_csdl_xml};
-use odatabase::sql::{Claims, Dialect, ExpandLimits, Page, QueryContext, ReadRequest, read_sql};
-use odatabase::uri::{Target, parse};
+use odatabase_sql::{Claims, Dialect, ExpandLimits, Page, QueryContext, ReadRequest, read_sql};
+use odatabase_uri::{Target, parse};
 use std::collections::HashMap;
 
 fn model() -> Model {

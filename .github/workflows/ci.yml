@@ -15,6 +15,24 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
+  # The rust-version in Cargo.toml, which the dependencies decide.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94
+      - run: cargo check --workspace --all-targets
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - run: cargo package --workspace --no-verify
+
   # Clients written by other projects. See conformance/README.md.
   clients:
     runs-on: ubuntu-latest

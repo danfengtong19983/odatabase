@@ -13,7 +13,9 @@ use percent_encoding::percent_decode_str;
 /// Bounds on request complexity. Exceeding one is a 400.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
+    /// Nesting depth of `$filter`, `$orderby` and other expressions. 64 by default.
     pub max_expression_depth: u32,
+    /// Nesting depth of `$expand`. 8 by default.
     pub max_expand_depth: u32,
 }
 

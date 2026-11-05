@@ -2,6 +2,7 @@ use odatabase_edm::Value;
 use std::collections::BTreeMap;
 
 /// An entity or complex value read from the database.
+#[doc(hidden)]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Record {
     /// Concrete type. Differs from the requested type for instances of derived types.
@@ -75,6 +76,7 @@ impl Record {
 }
 
 /// A property value of a [`Record`].
+#[doc(hidden)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum Node {
     Value(Value),
@@ -96,6 +98,7 @@ pub enum Node {
 }
 
 /// The target keys of `$expand=Nav/$ref`.
+#[doc(hidden)]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Refs {
     pub collection: bool,

@@ -5,6 +5,7 @@ use crate::model::*;
 use crate::value::PrimitiveKind;
 use serde_json::{Map, Value as Json, json};
 
+/// The model as a CSDL JSON document.
 pub fn to_csdl_json(m: &Model) -> Json {
     let mut schema = Map::new();
     for t in m.enum_types.values() {

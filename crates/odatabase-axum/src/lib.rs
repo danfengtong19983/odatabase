@@ -6,6 +6,8 @@
 //!
 //! Middleware can restrict the request by inserting [`Claims`] into its extensions.
 
+#![warn(missing_docs)]
+
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::extract::{OriginalUri, Request, State};

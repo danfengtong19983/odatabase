@@ -3,23 +3,29 @@
 use crate::ODataError;
 use http::{HeaderMap, HeaderValue, header};
 
+/// How many control information annotations a JSON response carries (`odata.metadata=`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MetadataLevel {
+    /// No annotations beyond next links and counts.
     None,
+    /// The context URL, ETags and annotations a client can't compute.
     #[default]
     Minimal,
+    /// Every annotation, including ids, types and navigation links.
     Full,
 }
 
 /// The negotiated JSON format of a response.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Format {
+    /// The metadata level.
     pub metadata: MetadataLevel,
     /// Write `Edm.Int64` and `Edm.Decimal` as strings.
     pub ieee754: bool,
 }
 
 impl Format {
+    /// The `Content-Type` header of the response.
     pub fn content_type(self) -> HeaderValue {
         let metadata = match self.metadata {
             MetadataLevel::None => "none",

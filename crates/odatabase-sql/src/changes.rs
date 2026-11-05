@@ -41,10 +41,14 @@ CREATE TABLE IF NOT EXISTS odata_changes (
 CREATE INDEX IF NOT EXISTS odata_changes_read ON odata_changes (entity_set, id);
 ";
 
+/// What happened to an entity, as recorded in the change log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChangeKind {
+    /// The entity was inserted.
     Created,
+    /// The entity's properties changed.
     Updated,
+    /// The entity was deleted.
     Deleted,
 }
 
@@ -59,6 +63,7 @@ impl ChangeKind {
 }
 
 /// One row of the log.
+#[doc(hidden)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoggedChange {
     pub id: i64,

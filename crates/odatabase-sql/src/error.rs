@@ -3,12 +3,19 @@
 pub enum QueryError {
     /// The request is at fault, or is not supported. `status` is the HTTP status to return.
     #[error("{message}")]
-    Status { status: u16, message: String },
+    Status {
+        /// The HTTP status.
+        status: u16,
+        /// A message for the client.
+        message: String,
+    },
+    /// The database refused the statement. Clients see a generic message.
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
 }
 
 impl QueryError {
+    /// A 400 error.
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self::Status {
             status: 400,
@@ -16,6 +23,7 @@ impl QueryError {
         }
     }
 
+    /// A 403 error.
     pub fn forbidden(message: impl Into<String>) -> Self {
         Self::Status {
             status: 403,
@@ -23,6 +31,7 @@ impl QueryError {
         }
     }
 
+    /// A 501 error.
     pub fn not_implemented(message: impl Into<String>) -> Self {
         Self::Status {
             status: 501,
@@ -30,6 +39,7 @@ impl QueryError {
         }
     }
 
+    /// A 500 error.
     pub fn internal(message: impl Into<String>) -> Self {
         Self::Status {
             status: 500,

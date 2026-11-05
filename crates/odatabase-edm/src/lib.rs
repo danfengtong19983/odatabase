@@ -1,4 +1,8 @@
 //! OData v4 entity data model: primitive values, the service model and CSDL writers.
+//!
+//! Re-exported as `odatabase::edm`, which is the supported path.
+
+#![warn(missing_docs)]
 
 mod builder;
 mod csdl_json;
