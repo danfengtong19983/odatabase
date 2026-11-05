@@ -280,7 +280,13 @@ impl Service {
         uri: &ODataUri,
         session: &Session,
     ) -> Result<ODataResponse, ODataError> {
-        if let Some(t) = changed_type(uri) {
+        if matches!(uri.target(), Target::Ref { .. }) {
+            // A link changes the navigation of its owner, like `Nav@odata.bind` in a PATCH,
+            // and creates or deletes no target entity. Writes to a target row (a foreign key
+            // it holds) are checked where they happen.
+            let (_, owner, _, _) = self.ref_target(uri)?;
+            crate::capabilities::check_write(&self.inner.model, &owner, &Method::PATCH)?;
+        } else if let Some(t) = changed_type(uri) {
             crate::capabilities::check_write(&self.inner.model, t, &req.method)?;
         }
         let item_insert = req.method == Method::POST
