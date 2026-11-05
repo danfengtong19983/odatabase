@@ -284,6 +284,9 @@ The test suite runs every scenario over HTTP through axum on SQLite, and again o
 in a container. Without a Docker daemon the Postgres tests print a notice and pass, except when
 `CI` is set, where they fail so that a green build always means they ran.
 
+`tests/e2e.rs` is the end-to-end run: it serves a multi-tenant shop with `axum::serve` and
+authentication middleware, and drives it over a real socket through the whole feature set.
+
 [conformance](https://github.com/danfengtong19983/odatabase/blob/main/conformance/README.md) runs third-party OData clients against the service.
 
 Snapshots of generated SQL and `$metadata` are in
