@@ -129,6 +129,9 @@ fn transformation(
         }
         "compute" => compute(ctx, scope, &current, args)?,
         "aggregate" => {
+            if nested_from(args) {
+                return Err(UriError::not_implemented("from with more than one level"));
+            }
             if let Some(rewritten) = rewrite_from(args) {
                 for part in rewritten {
                     transformation(ctx, scope, &part, steps, expand)?;
@@ -171,6 +174,15 @@ fn transformation(
     };
     steps.push(step);
     Ok(())
+}
+
+/// Whether an aggregate expression has `from` more than once, as in
+/// `E with a from P with b from Q with c as X`.
+fn nested_from(args: &str) -> bool {
+    split_top_level(args, ',').into_iter().any(|item| {
+        let body = split_keyword(item.trim(), "as").map_or(item.trim(), |(body, _)| body);
+        split_keyword(body, "from").is_some_and(|(inner, _)| split_keyword(inner, "from").is_some())
+    })
 }
 
 /// `E with a from P with b as X` first aggregates by `P`, then aggregates those results.

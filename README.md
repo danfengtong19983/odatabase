@@ -236,7 +236,6 @@ These return a status rather than a wrong result:
 
 | Feature | Response |
 |---|---|
-| Async requests | 501 |
 | In `$apply`: `nest`, `ancestors`, `descendants`, `traverse`, custom aggregates, `from` with more than one level, `join` on anything but navigation | 501 |
 | `join` with no later aggregation, and `expand` before an aggregation or inside `concat` | 501 |
 | `$expand` after an aggregation inside `$expand` | 501 |
@@ -247,6 +246,9 @@ These return a status rather than a wrong result:
 | Query options on the result of a handler-based operation, other than `$select` and `$expand` | 501 |
 | Data formats other than JSON | 406 |
 | `$link` and `$deletedLink` entries in delta payloads, `/$count` of a delta link | 400 |
+
+Requests are always answered synchronously: `Prefer: respond-async` is ignored, as the
+protocol allows.
 
 `groupby` keys and aggregated values can follow to-one navigation only: a to-many path is a 400.
 Each entity set announces its transformations through `Aggregation.ApplySupported`. A `concat` arm

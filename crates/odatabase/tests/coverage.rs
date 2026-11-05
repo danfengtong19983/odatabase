@@ -111,6 +111,10 @@ async fn unimplemented_features_answer_with_a_status(app: App) {
             501,
         ),
         (
+            "BusinessPartners?$apply=aggregate(Rating with sum from Abc with max from Active with average as T)",
+            501,
+        ),
+        (
             "BusinessPartners?$expand=Roles($apply=groupby((Partner/Id,Code));$expand=Partner)",
             501,
         ),
