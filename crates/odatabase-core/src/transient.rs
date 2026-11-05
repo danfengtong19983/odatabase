@@ -10,6 +10,7 @@ pub struct TransientRow<'r> {
 }
 
 impl TransientRow<'_> {
+    /// An input property's value by name.
     pub fn value(&self, property: &str) -> Option<&Value> {
         self.record
             .value(property)
@@ -19,6 +20,7 @@ impl TransientRow<'_> {
 
 /// Computes a transient property, like `EdmTransientPropertyCalculator`.
 pub trait TransientCalculator: Send + Sync {
+    /// The property's value for one row.
     fn calculate(&self, row: &TransientRow<'_>) -> Value;
 }
 

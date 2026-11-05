@@ -11,24 +11,31 @@ pub struct ModelError(pub String);
 
 /// Implemented by `#[derive(ODataEntity)]`.
 pub trait EdmEntity {
+    /// Qualified name of the entity type.
     fn edm_name() -> &'static str;
+    /// Adds the type, its set and the types it refers to.
     fn register(builder: &mut ModelBuilder);
 }
 
 /// Maps a Rust field type to its Edm type. Derived for complex types and enums.
 pub trait EdmField {
+    /// The Edm type, registering complex and enum types on first use.
     fn field_type(builder: &mut ModelBuilder) -> FieldType;
 }
 
 /// The Edm view of a Rust field.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FieldType {
+    /// The type.
     pub kind: TypeKind,
+    /// From `Option<T>`.
     pub nullable: bool,
+    /// From `Vec<T>`.
     pub collection: bool,
 }
 
 impl FieldType {
+    /// A non-nullable, single-valued primitive.
     pub fn primitive(kind: PrimitiveKind) -> Self {
         Self {
             kind: TypeKind::Primitive(kind),
@@ -125,6 +132,7 @@ pub struct ModelBuilder {
 }
 
 impl ModelBuilder {
+    /// An empty model with the schema `namespace`.
     pub fn new(namespace: impl Into<String>) -> Self {
         let namespace = namespace.into();
         let container = "Container".to_owned();
@@ -138,6 +146,7 @@ impl ModelBuilder {
         }
     }
 
+    /// Names the entity container.
     pub fn container(mut self, name: impl Into<String>) -> Self {
         self.model.container = name.into();
         self
@@ -149,37 +158,45 @@ impl ModelBuilder {
         self
     }
 
+    #[doc(hidden)]
     pub fn register_entity<T: EdmEntity>(&mut self) {
         if self.visited.insert(T::edm_name()) {
             T::register(self);
         }
     }
 
+    #[doc(hidden)]
     /// True on the first call for `name`. Stops recursion through cyclic types.
     pub fn first_visit(&mut self, name: &'static str) -> bool {
         self.visited.insert(name)
     }
 
+    #[doc(hidden)]
     pub fn add_entity_type(&mut self, t: EntityType) {
         self.model.entity_types.insert(t.name.clone(), t);
     }
 
+    #[doc(hidden)]
     pub fn add_complex_type(&mut self, t: ComplexType) {
         self.model.complex_types.insert(t.name.clone(), t);
     }
 
+    #[doc(hidden)]
     pub fn add_enum_type(&mut self, t: EnumType) {
         self.model.enum_types.insert(t.name.clone(), t);
     }
 
+    #[doc(hidden)]
     pub fn add_entity_set(&mut self, s: EntitySet) {
         self.model.entity_sets.insert(s.name.clone(), s);
     }
 
+    #[doc(hidden)]
     pub fn add_singleton(&mut self, s: Singleton) {
         self.model.singletons.insert(s.name.clone(), s);
     }
 
+    #[doc(hidden)]
     pub fn add_function(&mut self, op: Operation) {
         self.model
             .functions
@@ -188,6 +205,7 @@ impl ModelBuilder {
             .push(op);
     }
 
+    #[doc(hidden)]
     pub fn add_action(&mut self, op: Operation) {
         self.model
             .actions
@@ -196,25 +214,30 @@ impl ModelBuilder {
             .push(op);
     }
 
+    /// Adds a function overload.
     pub fn function(mut self, op: Operation) -> Self {
         self.add_function(op);
         self
     }
 
+    /// Adds an action overload.
     pub fn action(mut self, op: Operation) -> Self {
         self.add_action(op);
         self
     }
 
+    /// Adds an annotation.
     pub fn annotation(mut self, a: Annotation) -> Self {
         self.model.annotations.push(a);
         self
     }
 
+    #[doc(hidden)]
     pub fn model_mut(&mut self) -> &mut Model {
         &mut self.model
     }
 
+    /// Validates and returns the model.
     pub fn build(self) -> Result<Model, ModelError> {
         validate(&self.model)?;
         Ok(self.model)

@@ -14,7 +14,9 @@ use std::time::Duration;
 /// Service-wide settings.
 #[derive(Clone, Debug)]
 pub struct Config {
+    /// Limits on URL parsing, such as expression depth.
     pub uri_limits: Limits,
+    /// Limits on `$expand`, such as depth and `$levels=max`.
     pub expand_limits: ExpandLimits,
     /// Language of description properties when the request names none.
     pub default_language: String,
@@ -71,6 +73,7 @@ pub struct ServiceBuilder {
 }
 
 impl Service {
+    /// Starts a service whose model uses the schema `namespace`.
     pub fn builder(namespace: impl Into<String>) -> ServiceBuilder {
         ServiceBuilder {
             model: ModelBuilder::new(namespace),
@@ -120,10 +123,12 @@ impl Service {
         Ok(())
     }
 
+    /// The service model.
     pub fn model(&self) -> &Model {
         &self.inner.model
     }
 
+    /// The database the service reads and writes.
     pub fn database(&self) -> &Database {
         &self.inner.database
     }
@@ -235,16 +240,19 @@ impl Service {
 }
 
 impl ServiceBuilder {
+    /// Adds an entity type and its entity set, with every type it refers to.
     pub fn entity<T: EdmEntity>(mut self) -> Self {
         self.model = self.model.entity::<T>();
         self
     }
 
+    /// Names the entity container. `Container` by default.
     pub fn container(mut self, name: impl Into<String>) -> Self {
         self.model = self.model.container(name);
         self
     }
 
+    /// Replaces the default [`Config`].
     pub fn config(mut self, config: Config) -> Self {
         self.config = config;
         self

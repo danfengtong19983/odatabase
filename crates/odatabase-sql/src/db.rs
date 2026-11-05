@@ -21,7 +21,9 @@ use uuid::Uuid;
 /// How to read one result column.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ColumnDecode {
+    /// Converted to this primitive type.
     Primitive(PrimitiveKind),
+    /// The qualified name of an enum type, whose member the column stores.
     Enum(String),
     /// The database's own type, for columns only compared with each other.
     Natural,
@@ -30,8 +32,10 @@ pub enum ColumnDecode {
 /// A connection pool to one of the supported databases.
 #[derive(Clone, Debug)]
 pub enum Database {
+    /// A PostgreSQL pool.
     #[cfg(feature = "postgres")]
     Postgres(sqlx::PgPool),
+    /// A SQLite pool.
     #[cfg(feature = "sqlite")]
     Sqlite(sqlx::SqlitePool),
 }
@@ -40,6 +44,7 @@ pub enum Database {
 #[cfg(feature = "postgres")]
 #[derive(Clone, Copy, Debug)]
 pub struct PostgresOptions {
+    /// Size of the pool. 16 by default.
     pub max_connections: u32,
     /// Postgres cancels statements that run longer. `None` lets them run forever.
     pub statement_timeout: Option<std::time::Duration>,
@@ -89,6 +94,7 @@ impl From<sqlx::SqlitePool> for Database {
 }
 
 impl Database {
+    /// The SQL dialect of the pool.
     pub fn dialect(&self) -> Dialect {
         match self {
             #[cfg(feature = "postgres")]
@@ -98,6 +104,7 @@ impl Database {
         }
     }
 
+    /// Starts a transaction.
     pub async fn begin(&self) -> Result<Tx, QueryError> {
         Ok(match self {
             #[cfg(feature = "postgres")]
@@ -110,13 +117,16 @@ impl Database {
 
 /// An open transaction.
 pub enum Tx {
+    /// A PostgreSQL transaction.
     #[cfg(feature = "postgres")]
     Postgres(sqlx::Transaction<'static, sqlx::Postgres>),
+    /// A SQLite transaction.
     #[cfg(feature = "sqlite")]
     Sqlite(sqlx::Transaction<'static, sqlx::Sqlite>),
 }
 
 impl Tx {
+    /// Commits the transaction.
     pub async fn commit(self) -> Result<(), QueryError> {
         match self {
             #[cfg(feature = "postgres")]
@@ -127,6 +137,7 @@ impl Tx {
         Ok(())
     }
 
+    /// Rolls the transaction back.
     pub async fn rollback(self) -> Result<(), QueryError> {
         match self {
             #[cfg(feature = "postgres")]
@@ -141,7 +152,9 @@ impl Tx {
 /// Where statements run. Cloneable, so concurrent expands can share a transaction.
 #[derive(Clone)]
 pub enum Session {
+    /// Each statement takes a connection from the pool.
     Pool(Database),
+    /// Statements share one transaction, which is gone once committed or rolled back.
     Tx(Dialect, Arc<Mutex<Option<Tx>>>),
 }
 
@@ -152,6 +165,7 @@ impl From<Database> for Session {
 }
 
 impl Session {
+    /// Starts a transactional session.
     pub async fn begin(db: &Database) -> Result<Self, QueryError> {
         Ok(Self::Tx(
             db.dialect(),
@@ -159,6 +173,7 @@ impl Session {
         ))
     }
 
+    /// The SQL dialect of the database.
     pub fn dialect(&self) -> Dialect {
         match self {
             Self::Pool(db) => db.dialect(),
@@ -176,6 +191,7 @@ impl Session {
         Ok(())
     }
 
+    /// Rolls back a transactional session.
     pub async fn rollback(&self) -> Result<(), QueryError> {
         if let Self::Tx(_, tx) = self
             && let Some(tx) = tx.lock().await.take()
@@ -198,6 +214,7 @@ impl Session {
         Ok(())
     }
 
+    /// Runs a query and decodes each row's columns as `columns` says.
     pub async fn fetch(
         &self,
         model: &Model,

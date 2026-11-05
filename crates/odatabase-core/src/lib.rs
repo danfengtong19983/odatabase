@@ -1,6 +1,11 @@
 //! OData v4 request processing, independent of any web framework.
 //!
 //! An adapter turns its native request into an [`ODataRequest`] and calls [`Service::handle`].
+//!
+//! Part of [odatabase](https://docs.rs/odatabase). Its API follows the needs of that crate and
+//! changes without notice: depend on `odatabase` instead.
+
+#![warn(missing_docs)]
 
 mod batch;
 mod capabilities;
@@ -26,8 +31,9 @@ pub use format::{Format, MetadataLevel};
 pub use odatabase_sql::PostgresOptions;
 pub use odatabase_sql::TenantScope;
 pub use odatabase_sql::{
-    ClaimValue, Claims, Database, Dialect, QueryError, QueryExtension, TableRef,
+    ClaimValue, Claims, Database, Dialect, ExpandLimits, QueryError, QueryExtension, TableRef,
 };
+pub use odatabase_uri::Limits as UriLimits;
 pub use operation::{
     Binding, OperationBuilder, OperationContext, OperationHandler, OperationResult,
 };

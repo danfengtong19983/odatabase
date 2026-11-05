@@ -7,15 +7,20 @@ use serde_json::{Map, Value as Json};
 /// A property value from a request body.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PropertyValue {
+    /// A primitive or enum value, or null.
     Value(Value),
+    /// A complex value as named properties, or null.
     Complex(Option<Vec<(String, PropertyValue)>>),
+    /// A collection of values.
     Collection(Vec<PropertyValue>),
 }
 
 /// An entity from a request body, which may hold nested entities and links.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EntityPayload {
+    /// Qualified name of the type, which `@odata.type` can make a derived type.
     pub type_name: String,
+    /// Structural properties present in the body. Absent ones are left out.
     pub values: Vec<(String, PropertyValue)>,
     /// Related entities given inline. Empty for a single-valued navigation set to null.
     pub nested: Vec<(String, Vec<EntityPayload>)>,
@@ -32,7 +37,9 @@ pub struct EntityPayload {
 pub enum DeltaItem {
     /// An entity to create or update. `id` names it when the properties don't.
     Entity {
+        /// The entity's `@id`.
         id: Option<String>,
+        /// Its properties.
         entity: EntityPayload,
     },
     /// An existing entity to relate, given only by its URL.
@@ -40,13 +47,17 @@ pub enum DeltaItem {
     /// An entity to take away, named by `id` or by its key properties. With `deleted` it stops
     /// existing, otherwise only the relationship ends.
     Removed {
+        /// The entity's `@id`.
         id: Option<String>,
+        /// Its key properties, if given.
         entity: EntityPayload,
+        /// Whether the reason is `deleted` rather than `changed`.
         deleted: bool,
     },
 }
 
 impl EntityPayload {
+    /// A property from the body by name.
     pub fn value(&self, property: &str) -> Option<&PropertyValue> {
         self.values
             .iter()

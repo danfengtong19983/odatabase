@@ -20,18 +20,33 @@ use std::sync::Arc;
 /// The entity or set a bound operation was called on.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Binding {
-    Entity { type_name: String, key: EntityKey },
-    Collection { type_name: String },
+    /// A single entity.
+    Entity {
+        /// Qualified name of its type.
+        type_name: String,
+        /// Its key.
+        key: EntityKey,
+    },
+    /// An entity set or collection navigation.
+    Collection {
+        /// Qualified name of the member type.
+        type_name: String,
+    },
 }
 
 /// What an operation handler receives.
 pub struct OperationContext<'a> {
+    /// The service model.
     pub model: &'a Model,
+    /// The caller's claims.
     pub claims: &'a Claims,
     /// A transaction for actions, the pool for functions.
     pub session: &'a Session,
+    /// The operation's name.
     pub name: &'a str,
+    /// Parameter values by name, without the binding parameter.
     pub parameters: Vec<(String, PropertyValue)>,
+    /// What a bound operation was called on.
     pub binding: Option<Binding>,
 }
 
@@ -51,8 +66,11 @@ impl OperationContext<'_> {
 /// The outcome of an operation, which must match its declared return type.
 #[derive(Clone, Debug, PartialEq)]
 pub enum OperationResult {
+    /// No return value.
     Void,
+    /// A primitive or enum value.
     Value(Value),
+    /// A collection of primitive or enum values.
     Values(Vec<Value>),
     /// A complex value or a collection of them, as OData JSON.
     Json(Json),
@@ -66,6 +84,7 @@ pub enum OperationResult {
 /// entity must advance its version as well, or the old ETag stays valid.
 #[async_trait]
 pub trait OperationHandler: Send + Sync {
+    /// Runs the operation.
     async fn call(&self, ctx: &OperationContext<'_>) -> Result<OperationResult, ODataError>;
 }
 
@@ -128,6 +147,7 @@ impl<'m> OperationBuilder<'m> {
         );
     }
 
+    /// Adds a parameter of the Rust type `T`. `Option<T>` makes it nullable.
     pub fn param<T: EdmField>(mut self, name: &str) -> Self {
         let ty = to_type(T::field_type(self.model));
         self.op.parameters.push(Parameter {
@@ -137,15 +157,18 @@ impl<'m> OperationBuilder<'m> {
         self
     }
 
+    /// Returns a value of the Rust type `T`, such as `i32`, `Vec<String>` or a complex type.
     pub fn returns<T: EdmField>(mut self) -> Self {
         self.op.return_type = Some(to_type(T::field_type(self.model)));
         self
     }
 
+    /// Returns a single entity, or null.
     pub fn returns_entity<T: EdmEntity>(self) -> Self {
         self.entity_result::<T>(false)
     }
 
+    /// Returns a collection of entities.
     pub fn returns_entities<T: EdmEntity>(self) -> Self {
         self.entity_result::<T>(true)
     }
@@ -172,11 +195,13 @@ impl<'m> OperationBuilder<'m> {
         self
     }
 
+    /// Hides the operation from callers outside `group`. Can be repeated.
     pub fn visible_for(mut self, group: &str) -> Self {
         self.op.visible_for.push(group.to_owned());
         self
     }
 
+    /// The code that runs the operation.
     pub fn handler(mut self, handler: impl OperationHandler + 'static) -> Self {
         self.handler = Some(Arc::new(handler));
         self

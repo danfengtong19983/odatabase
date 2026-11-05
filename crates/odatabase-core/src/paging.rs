@@ -6,19 +6,26 @@ use odatabase_sql::Claims;
 /// What a request asks of the pager.
 #[derive(Clone, Debug)]
 pub struct PageRequest<'a> {
+    /// Qualified name of the type being read.
     pub entity_type: &'a str,
+    /// The client's `$top`.
     pub top: Option<u64>,
+    /// The client's `$skip`.
     pub skip: Option<u64>,
+    /// The `$skiptoken` of a next link, as the provider wrote it.
     pub skiptoken: Option<&'a str>,
     /// The client's `Prefer: odata.maxpagesize`.
     pub max_page_size: Option<u64>,
+    /// The caller's claims.
     pub claims: &'a Claims,
 }
 
 /// The window to read, and the token of the following page if there may be one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PageResult {
+    /// Rows to read.
     pub top: Option<u64>,
+    /// Rows to skip.
     pub skip: Option<u64>,
     /// Token for the next page, used if the page turns out to be full.
     pub next: Option<String>,
@@ -28,6 +35,7 @@ pub struct PageResult {
 
 /// Decides the pages of collection reads, like `JPAODataPagingProvider`.
 pub trait PagingProvider: Send + Sync {
+    /// Decides the window of one read.
     fn page(&self, request: &PageRequest<'_>) -> Result<PageResult, ODataError>;
 }
 

@@ -6,7 +6,10 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-rust-version = "1.88"
+rust-version = "1.94"
+repository = "https://github.com/danfengtong19983/odatabase"
+keywords = ["odata", "rest", "api", "sql", "postgres"]
+categories = ["web-programming::http-server", "database"]
 
 [workspace.dependencies]
 odatabase-edm = { path = "crates/odatabase-edm", version = "0.1.0" }

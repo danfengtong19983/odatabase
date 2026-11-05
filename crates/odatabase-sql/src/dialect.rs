@@ -3,11 +3,14 @@ use odatabase_edm::PrimitiveKind;
 /// The supported SQL dialects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dialect {
+    /// PostgreSQL.
     Postgres,
+    /// SQLite.
     Sqlite,
 }
 
 impl Dialect {
+    #[doc(hidden)]
     /// `$1 IS NOT DISTINCT FROM $2`: equality where nulls compare equal.
     pub fn null_safe_eq(self) -> &'static str {
         match self {
@@ -16,6 +19,7 @@ impl Dialect {
         }
     }
 
+    #[doc(hidden)]
     pub fn null_safe_ne(self) -> &'static str {
         match self {
             Self::Postgres => "($1 IS DISTINCT FROM $2)",
@@ -23,6 +27,7 @@ impl Dialect {
         }
     }
 
+    #[doc(hidden)]
     pub fn cast_type(self, kind: PrimitiveKind) -> Option<&'static str> {
         use PrimitiveKind as P;
         Some(match (self, kind) {

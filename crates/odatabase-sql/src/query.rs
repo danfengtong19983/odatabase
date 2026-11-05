@@ -18,6 +18,7 @@ use sea_query::{Alias, Asterisk, Expr, ExprTrait, NullOrdering, Order, Query, Se
 use std::collections::{BTreeMap, BTreeSet};
 
 /// `$top` and `$skip` after server-driven paging was applied.
+#[doc(hidden)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Page {
     pub top: Option<u64>,
@@ -25,6 +26,7 @@ pub struct Page {
 }
 
 /// A read of the entities addressed by `segments`.
+#[doc(hidden)]
 #[derive(Clone, Copy)]
 pub struct ReadRequest<'a> {
     pub segments: &'a [Segment],

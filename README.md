@@ -34,11 +34,15 @@ let service = Service::builder("Shop").entity::<Customer>().build(pool)?;
 let app = odatabase::mount("/odata", service);
 ```
 
-A runnable version is in [examples/quickstart.rs](crates/odatabase/examples/quickstart.rs):
+A runnable version is in [examples/quickstart.rs](https://github.com/danfengtong19983/odatabase/blob/main/crates/odatabase/examples/quickstart.rs):
 
 ```bash
 cargo run -p odatabase --example quickstart
 ```
+
+[examples/multi_tenant.rs](https://github.com/danfengtong19983/odatabase/blob/main/crates/odatabase/examples/multi_tenant.rs)
+adds claims from middleware, tenancy, a change handler and an action. The API reference with
+every `#[odata(...)]` attribute is on [docs.rs](https://docs.rs/odatabase).
 
 ```bash
 curl -G 'http://127.0.0.1:3000/odata/Customers' --data-urlencode "\$filter=Address/City eq 'London'" --data-urlencode '$expand=Orders'
@@ -280,10 +284,10 @@ The test suite runs every scenario over HTTP through axum on SQLite, and again o
 in a container. Without a Docker daemon the Postgres tests print a notice and pass, except when
 `CI` is set, where they fail so that a green build always means they ran.
 
-[conformance](conformance/README.md) runs third-party OData clients against the service.
+[conformance](https://github.com/danfengtong19983/odatabase/blob/main/conformance/README.md) runs third-party OData clients against the service.
 
 Snapshots of generated SQL and `$metadata` are in
-[crates/odatabase/tests/snapshots](crates/odatabase/tests/snapshots). Review changes to them with
+[crates/odatabase/tests/snapshots](https://github.com/danfengtong19983/odatabase/blob/main/crates/odatabase/tests/snapshots). Review changes to them with
 `cargo insta review`.
 
-Licensed under Apache-2.0. See [NOTICE](NOTICE) for attribution.
+Licensed under Apache-2.0. See [NOTICE](https://github.com/danfengtong19983/odatabase/blob/main/NOTICE) for attribution.

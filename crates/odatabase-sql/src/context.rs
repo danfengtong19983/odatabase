@@ -7,6 +7,7 @@ use std::sync::Arc;
 /// A permitted value of a claim, compared to the protected column.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ClaimValue {
+    /// Exactly this value.
     Equals(Value),
     /// Inclusive range.
     Range(Value, Value),
@@ -17,23 +18,29 @@ pub enum ClaimValue {
 /// Which tenants a request reaches.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TenantScope {
+    /// Every tenant, from [`ClaimValue::Any`].
     All,
+    /// These tenants only.
     Only(Vec<Value>),
 }
 
 /// What the current user may see, supplied per request by the application.
 #[derive(Clone, Debug, Default)]
 pub struct Claims {
+    /// Permitted values per claim name. A row is visible if its column matches any of them.
     pub values: HashMap<String, Vec<ClaimValue>>,
+    /// The groups the user belongs to, checked against `#[odata(visible_for = "...")]`.
     pub groups: Vec<String>,
 }
 
 impl Claims {
+    /// Adds a permitted value for `claim`.
     pub fn with(mut self, claim: impl Into<String>, value: ClaimValue) -> Self {
         self.values.entry(claim.into()).or_default().push(value);
         self
     }
 
+    /// Adds a group.
     pub fn with_group(mut self, group: impl Into<String>) -> Self {
         self.groups.push(group.into());
         self
@@ -91,6 +98,7 @@ pub struct TableRef {
 }
 
 impl TableRef {
+    /// A column of the table, by its database name.
     pub fn col(&self, column: &str) -> Expr {
         Expr::col((Alias::new(self.alias.as_str()), Alias::new(column)))
     }
@@ -99,10 +107,12 @@ impl TableRef {
 /// Adds a condition to every read of an entity type, wherever it is reached from.
 /// Registered for types declared with `#[odata(query_extension)]`.
 pub trait QueryExtension: Send + Sync {
+    /// The condition rows must meet for this caller, or `None` for no restriction.
     fn condition(&self, table: &TableRef, claims: &Claims) -> Result<Option<Expr>, QueryError>;
 }
 
 /// The inputs of query translation that stay fixed during a request.
+#[doc(hidden)]
 #[derive(Clone)]
 pub struct QueryContext<'a> {
     pub model: &'a Model,
