@@ -1,7 +1,7 @@
 odatabase
 Copyright 2026 odatabase contributors
 
-The design of this project, and the test model and schema under tests/fixtures,
+The design of this project, and the test model and schema under crates/odatabase/tests/common,
 are derived from SAP/olingo-jpa-processor-v4:
 Copyright (c) 2016-2025 SAP SE or an SAP affiliate company and
 olingo-jpa-processor-v4 contributors. Licensed under the Apache License 2.0.

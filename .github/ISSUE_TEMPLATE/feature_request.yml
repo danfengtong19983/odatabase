@@ -1,0 +1,21 @@
+name: Feature request
+description: Part of OData v4 that isn't supported, or an extension point you need
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What you need
+      description: The request you want to work, or the problem you're solving.
+    validations:
+      required: true
+  - type: textarea
+    id: spec
+    attributes:
+      label: Specification
+      description: The section of the OData specification it comes from, if any. Check "Not implemented" in the README first.
+  - type: textarea
+    id: clients
+    attributes:
+      label: Clients
+      description: Which client libraries or tools need it.
