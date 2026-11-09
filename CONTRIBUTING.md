@@ -1,7 +1,7 @@
 # Contributing
 
 Thanks for helping. Bug reports, failing requests from a real OData client, and pull requests
-are all welcome.
+are all welcome. Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md).
 
 ## Reporting a bug
 

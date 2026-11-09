@@ -23,6 +23,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.94
       - run: cargo check --workspace --all-targets
 
+  # Known vulnerabilities, licenses and sources of dependencies. See deny.toml.
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources
+
   docs:
     runs-on: ubuntu-latest
     steps:

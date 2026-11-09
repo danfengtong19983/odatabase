@@ -1,0 +1,43 @@
+# Checks run by `cargo deny check` in CI: known vulnerabilities, licenses compatible with
+# Apache-2.0, and where dependencies come from.
+
+[graph]
+all-features = true
+
+[advisories]
+# Every advisory fails the build, including unmaintained crates. Ignore one here only with a
+# comment saying why it doesn't affect odatabase.
+ignore = [
+    # astral-tokio-tar is unmaintained. Only testcontainers uses it, a dev-dependency that
+    # starts the Postgres test database, so it never reaches users. Drop this once
+    # testcontainers moves to a maintained tar crate.
+    { id = "RUSTSEC-2026-0440", reason = "dev-only, through testcontainers" },
+]
+
+[licenses]
+# Permissive licenses that can be combined with Apache-2.0.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+]
+# The list is a policy, not an inventory: allowing a license nothing uses yet is fine.
+unused-allowed-license = "allow"
+confidence-threshold = 0.9
+
+[bans]
+# Several versions of one crate only cost build time, so they are reported, not refused.
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

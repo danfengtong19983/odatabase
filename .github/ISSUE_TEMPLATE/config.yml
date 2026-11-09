@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/danfengtong19983/odatabase/security/advisories/new
+    about: Report problems privately. Don't open a public issue.

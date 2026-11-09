@@ -1,0 +1,44 @@
+name: Bug report
+description: A request that gets a wrong or unexpected response
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security problems (data a caller shouldn't reach, SQL injection) must not be reported here.
+        Use **Report a vulnerability** on the Security tab instead: see SECURITY.md.
+  - type: textarea
+    id: request
+    attributes:
+      label: Request
+      description: Method, URL and body. If a client library sent it, name the library and its version.
+      render: http
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Response you got
+      description: Status and body.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Response you expected
+      description: What the OData specification or your client expects, with a link if you have one.
+    validations:
+      required: true
+  - type: textarea
+    id: model
+    attributes:
+      label: Model
+      description: The derived types involved, or a reduced version, and the table definitions.
+      render: rust
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: odatabase version, database (PostgreSQL or SQLite) and its version, Rust version.
+    validations:
+      required: true
