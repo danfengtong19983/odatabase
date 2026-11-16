@@ -94,8 +94,14 @@ authentication.
   option on your own pool, to stop the query itself. SQLite has no equivalent.
 - **Mounting.** `mount` returns a `Router` to merge into your own. Use it rather than `nest`,
   because `nest` answers `/odata/` with a 404 and .NET clients send that trailing slash.
-- **Service URLs** are built from the `Host` and `X-Forwarded-Proto` headers. Run behind a proxy
-  that sets them.
+- **Service URLs.** Set `Config::public_root` to the URL clients reach the service at, such as
+  `https://api.example.com/odata`. Without it, links, `Location` headers and `@odata.context`
+  are built from the `Host` and `X-Forwarded-Proto` headers, which only a proxy that sets them
+  makes trustworthy.
+- **Limits.** `Config` bounds the body size (16 MiB) and the requests in a `$batch` (1000).
+  `UriLimits` bounds expression depth (64), `$expand` depth (8), `in` lists (1000 items),
+  `$orderby` (32 terms) and `$select` (256 items). `UriLimits::matches_pattern` turns off
+  `matchesPattern`, whose pattern runs as a regular expression in the database.
 - **Bound actions** check `If-Match` before the handler runs. A handler that changes the entity
   must advance its version column too, through `sql::update`, or the old ETag stays valid.
 - **Upsert.** PATCH or PUT on a missing key creates the entity and answers 201. `If-Match` stops

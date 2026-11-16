@@ -293,6 +293,45 @@ async fn links_follow_the_owner_restrictions(app: App) {
     assert_eq!(app.ok("Divisions('BE')").await["ParentCode"], "DE");
 }
 
+/// Item-level `$top` and `$skip` on a collection property page each owner's items apart.
+async fn collection_items_are_paged_per_owner(app: App) {
+    let comments = |doc: &serde_json::Value| {
+        doc["value"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| (p["Id"].clone(), p["Comments"].clone()))
+            .collect::<Vec<_>>()
+    };
+    let doc = app
+        .ok("BusinessPartners?$filter=Id in ('1','2','4')&$orderby=Id&$select=Id,Comments($orderby=$it desc;$top=1)")
+        .await;
+    assert_eq!(
+        comments(&doc),
+        [
+            (json!("1"), json!(["second"])),
+            (json!("2"), json!(["only"])),
+            (json!("4"), json!([])),
+        ]
+    );
+    let doc = app
+        .ok("BusinessPartners?$filter=Id in ('1','2')&$orderby=Id&$select=Id,Comments($skip=1)")
+        .await;
+    assert_eq!(
+        comments(&doc),
+        [(json!("1"), json!(["second"])), (json!("2"), json!([]))]
+    );
+    let doc = app
+        .ok("BusinessPartners?$filter=Id in ('1','2')&$orderby=Id&$select=Id,Comments($top=1;$count=true)")
+        .await;
+    assert_eq!(doc["value"][0]["Comments"], json!(["first"]));
+    assert_eq!(
+        doc["value"][0]["Comments@odata.count"], 2,
+        "the count covers every item"
+    );
+    assert_eq!(doc["value"][1]["Comments@odata.count"], 1);
+}
+
 mod run {
     use super::common;
     use odatabase::{Database, Service};
@@ -311,6 +350,7 @@ mod run {
         trailing_slash_root,
         oversized_bodies_are_refused,
         links_follow_the_owner_restrictions,
+        collection_items_are_paged_per_owner,
     );
 }
 
@@ -420,4 +460,161 @@ async fn matches_pattern_per_dialect() {
     let pool = server.pool(common::SCHEMA).await;
     let app = App::new(common::builder().build(pool).unwrap());
     assert_eq!(app.ids(query).await, ["1", "2"]);
+}
+
+async fn with_config(config: Config) -> App {
+    common::sqlite(|db| common::builder().config(config).build(db).unwrap()).await
+}
+
+/// `Config::public_root` replaces the URL taken from request headers.
+#[tokio::test]
+async fn public_root_overrides_request_headers() {
+    let app = with_config(Config {
+        public_root: Some("https://api.example.com/v1/odata/".into()),
+        ..Config::default()
+    })
+    .await;
+    let r = app
+        .request(
+            Method::GET,
+            "BusinessPartners?$top=1&$orderby=Id",
+            &[("host", "evil.example"), ("x-forwarded-proto", "gopher")],
+            "",
+        )
+        .await;
+    let doc = r.json();
+    assert_eq!(
+        doc["@odata.context"],
+        "https://api.example.com/v1/odata/$metadata#BusinessPartners"
+    );
+    let r = app
+        .request(
+            Method::POST,
+            "Tickets",
+            &[
+                ("content-type", "application/json"),
+                ("host", "evil.example"),
+            ],
+            &json!({"Title": "t"}).to_string(),
+        )
+        .await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    assert!(
+        r.header("location")
+            .unwrap()
+            .starts_with("https://api.example.com/v1/odata/Tickets("),
+        "{:?}",
+        r.header("location")
+    );
+}
+
+/// Body and batch sizes come from `Config`.
+#[tokio::test]
+async fn body_and_batch_limits_are_configurable() {
+    let app = with_config(Config {
+        max_body_size: 64,
+        max_batch_requests: 2,
+        ..Config::default()
+    })
+    .await;
+    let r = app
+        .request(
+            Method::POST,
+            "Tickets",
+            &[("content-type", "application/json")],
+            &json!({"Title": "x", "Note": "y".repeat(100)}).to_string(),
+        )
+        .await;
+    assert_eq!(r.status, 413);
+
+    let app = with_config(Config {
+        max_batch_requests: 2,
+        ..Config::default()
+    })
+    .await;
+    let part = "--b\r\nContent-Type: application/http\r\nContent-Transfer-Encoding: binary\r\n\r\nGET Settings HTTP/1.1\r\n\r\n\r\n";
+    let send = |n: usize| {
+        let app = app.clone();
+        async move {
+            app.request(
+                Method::POST,
+                "$batch",
+                &[("content-type", "multipart/mixed; boundary=b")],
+                &format!("{}--b--\r\n", part.repeat(n)),
+            )
+            .await
+            .status
+        }
+    };
+    assert_eq!(send(2).await, 200);
+    assert_eq!(send(3).await, 400);
+}
+
+/// The sizes of `in` lists, `$orderby` and `$select`, and `matchesPattern`, are bounded by
+/// `UriLimits`.
+#[tokio::test]
+async fn uri_limits_bound_list_sizes() {
+    let app = common::sqlite_default().await;
+    let list = |n: usize| {
+        (0..n)
+            .map(|i| format!("'{i}'"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    assert_eq!(
+        app.status(&format!("BusinessPartners?$filter=Id in ({})", list(1000)))
+            .await,
+        200
+    );
+    assert_eq!(
+        app.status(&format!("BusinessPartners?$filter=Id in ({})", list(1001)))
+            .await,
+        400
+    );
+    let terms = |n: usize| vec!["Id"; n].join(",");
+    assert_eq!(
+        app.status(&format!("BusinessPartners?$orderby={}", terms(32)))
+            .await,
+        200
+    );
+    assert_eq!(
+        app.status(&format!("BusinessPartners?$orderby={}", terms(33)))
+            .await,
+        400
+    );
+    assert_eq!(
+        app.status(&format!("BusinessPartners?$select={}", terms(256)))
+            .await,
+        200
+    );
+    assert_eq!(
+        app.status(&format!("BusinessPartners?$select={}", terms(257)))
+            .await,
+        400
+    );
+
+    let app = with_config(Config {
+        uri_limits: odatabase::UriLimits {
+            max_in_items: 2,
+            matches_pattern: false,
+            ..odatabase::UriLimits::default()
+        },
+        ..Config::default()
+    })
+    .await;
+    assert_eq!(
+        app.status("BusinessPartners?$filter=Id in ('1','2','3')")
+            .await,
+        400
+    );
+    assert_eq!(
+        app.status("BusinessPartners?$filter=matchesPattern(Name,'^F')")
+            .await,
+        501
+    );
+    assert_eq!(
+        app.status("BusinessPartners?$apply=filter(matchesPattern(Name,'^F'))")
+            .await,
+        501
+    );
 }

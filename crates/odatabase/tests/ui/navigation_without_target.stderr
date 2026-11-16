@@ -1,0 +1,5 @@
+error: navigation needs target = Type
+ --> tests/ui/navigation_without_target.rs:8:13
+  |
+8 |     #[odata(has_many(on(id = "thing_id")))]
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

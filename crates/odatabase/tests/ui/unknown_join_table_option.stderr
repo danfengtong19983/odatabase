@@ -1,0 +1,5 @@
+error: expected table, source, target or tenant_column
+ --> tests/ui/unknown_join_table_option.rs:8:65
+  |
+8 |     #[odata(has_many(target = Thing, join_table(table = "link", sorce(id = "a"))))]
+  |                                                                 ^^^^^

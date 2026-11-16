@@ -4,6 +4,7 @@ use crate::UriError;
 use crate::apply::ApplyScope;
 use crate::ast::*;
 use crate::lexer::{Token, tokenize};
+use crate::path::Limits;
 use odatabase_edm::{Model, PrimitiveKind, TypeKind, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -34,7 +35,7 @@ pub struct ExprParser<'a> {
     pub vars: Vec<(String, ExprType)>,
     pub aliases: &'a Aliases,
     pub depth: u32,
-    pub max_depth: u32,
+    pub limits: Limits,
 }
 
 const FUNCTIONS: [(&str, Func, u8, u8); 28] = [
@@ -84,7 +85,7 @@ pub fn parse_expression(
     text: &str,
     scope: Scope,
     aliases: &Aliases,
-    max_depth: u32,
+    limits: Limits,
 ) -> Result<Expr, UriError> {
     let vars = match &scope {
         Scope::Applied(a) => a.joins.clone(),
@@ -99,7 +100,7 @@ pub fn parse_expression(
         vars,
         aliases,
         depth: 0,
-        max_depth,
+        limits,
     };
     let e = p.or_expr()?;
     p.expect_end()?;
@@ -153,7 +154,7 @@ impl ExprParser<'_> {
 
     fn enter(&mut self) -> Result<(), UriError> {
         self.depth += 1;
-        if self.depth > self.max_depth {
+        if self.depth > self.limits.max_expression_depth {
             return Err(UriError::bad_request("expression is nested too deeply"));
         }
         Ok(())
@@ -232,6 +233,12 @@ impl ExprParser<'_> {
                 let (_, item) = self.unify(left.clone(), item)?;
                 self.check_comparable(BinaryOp::Eq, &left, &item)?;
                 items.push(item);
+                if items.len() > self.limits.max_in_items {
+                    return Err(UriError::bad_request(format!(
+                        "an in list is limited to {} items",
+                        self.limits.max_in_items
+                    )));
+                }
                 if !self.accept(&Token::Comma) {
                     break;
                 }
@@ -409,6 +416,11 @@ impl ExprParser<'_> {
                 "cast" => return self.cast(),
                 "isof" => return self.isof(),
                 _ => {}
+            }
+            if name == "matchesPattern" && !self.limits.matches_pattern {
+                return Err(UriError::not_implemented(
+                    "matchesPattern is turned off for this service",
+                ));
             }
             if let Some((_, f, min, max)) = FUNCTIONS.iter().find(|(n, ..)| *n == name) {
                 self.pos += 1;

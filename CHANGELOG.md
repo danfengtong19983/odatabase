@@ -24,3 +24,6 @@ First release.
 - **Security.** Row protection from claims, group visibility, query extensions, and
   multi-tenancy with `#[odata(tenant)]` and settings for PostgreSQL row-level security.
 - **Integration.** `mount` for axum, and `Service::handle` for other frameworks.
+- **Limits.** `Config::public_root` for links behind a proxy, `max_body_size` and
+  `max_batch_requests`, and `UriLimits` bounds on `in` lists, `$orderby`, `$select` and
+  `matchesPattern`.

@@ -33,6 +33,13 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 - **Snapshots.** Generated SQL and `$metadata` are pinned in
   `crates/odatabase/tests/snapshots`. Review changes with `cargo insta review` and commit them
   with the change that caused them.
+- **Parsers.** `tests/parsers.rs` feeds mutated URLs and `$batch` bodies to the parsers on every
+  run; `PARSER_ROUNDS=2000000` searches longer. `fuzz/` has coverage-guided targets for the same
+  parsers, which CI runs for a minute each: `cargo +nightly fuzz run uri` with
+  [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) runs one locally.
+- **Macro errors.** `tests/ui` holds code the derive macros must reject, with the expected
+  messages. After an intended change, regenerate them with
+  `TRYBUILD=overwrite cargo test -p odatabase --test macros` and review the diff.
 - **Clients.** `conformance/` runs third-party OData clients (.NET, Java, Python, UI5 and an
   OpenAPI converter) against a test server. CI runs them on every pull request. See
   [conformance/README.md](conformance/README.md) to run one locally.

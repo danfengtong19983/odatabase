@@ -15,9 +15,6 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use odatabase_core::{Claims, ODataRequest, Service};
 
-/// Request bodies above this size are rejected.
-const MAX_BODY: usize = 16 * 1024 * 1024;
-
 #[derive(Clone)]
 struct Mounted {
     service: Service,
@@ -67,7 +64,8 @@ async fn handle(
         .and_then(|h| h.to_str().ok())
         .unwrap_or("http");
     let root = format!("{scheme}://{host}{prefix}");
-    let Ok(body) = to_bytes(body, MAX_BODY).await else {
+    // Bodies above `Config::max_body_size` are refused.
+    let Ok(body) = to_bytes(body, service.config().max_body_size).await else {
         return (StatusCode::PAYLOAD_TOO_LARGE, "request body too large").into_response();
     };
     let claims = parts

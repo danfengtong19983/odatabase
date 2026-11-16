@@ -15,7 +15,7 @@ use odatabase_uri::{
     ComputeItem, Expr as UExpr, OrderItem, QueryOptions, Segment, SelectItem, Step, Transformation,
 };
 use sea_query::{Alias, Asterisk, Expr, ExprTrait, NullOrdering, Order, Query, SelectStatement};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// `$top` and `$skip` after server-driven paging was applied.
 #[doc(hidden)]
@@ -971,14 +971,23 @@ pub async fn read_collections(
             let condition = tr.condition(&frame, &text_search(&fields, search))?;
             sel.and_where(condition);
         }
+        // The order is kept for a window too, which pages each owner's items in the database.
+        let (mut order, mut order_exprs) = (Vec::new(), Vec::new());
         for item in own.map_or(&[][..], |o| o.orderby.as_slice()) {
             let (direction, nulls) = sort_direction(item.descending);
             let e = tr.expr(&frame, &item.expr)?;
-            sel.order_by_expr_with_nulls(e, direction, nulls);
+            sel.order_by_expr_with_nulls(e.clone(), direction.clone(), nulls);
+            order.push((direction, nulls));
+            order_exprs.push(e);
         }
-        if let Some(order) = &c.order_column {
-            sel.order_by_expr(col(&alias, order), Order::Asc);
+        if let Some(order_column) = &c.order_column {
+            sel.order_by_expr(col(&alias, order_column), Order::Asc);
+            order.push(sort_direction(false));
+            order_exprs.push(col(&alias, order_column));
         }
+        let owner_columns: Vec<&str> = c.owner.iter().map(|p| p.target.as_str()).collect();
+        // `$count` needs every item, so only a page without it is cut in the database.
+        let paged = own.filter(|o| !o.count && (o.top.is_some() || o.skip.is_some()));
         let keys = distinct_keys(records, c.owner.iter().map(|p| p.source.as_str()));
         let mut rows = Vec::new();
         for chunk in keys.chunks(crate::expand::KEY_CHUNK) {
@@ -986,36 +995,49 @@ pub async fn read_collections(
             q.and_where(crate::expand::key_condition(
                 &tr,
                 &alias,
-                &c.owner
-                    .iter()
-                    .map(|p| p.target.as_str())
-                    .collect::<Vec<_>>(),
+                &owner_columns,
                 chunk,
             )?);
+            if let Some(options) = paged {
+                q = crate::expand::windowed(
+                    &mut q,
+                    &alias,
+                    &owner_columns,
+                    &order,
+                    &order_exprs,
+                    options,
+                    &layout,
+                );
+            }
             rows.extend(fetch_layout(model, session, &q, &layout).await?);
         }
         let items = to_records(model, "", &layout, rows);
-        let targets: Vec<&str> = c.owner.iter().map(|p| p.target.as_str()).collect();
         let is_complex = matches!(p.kind, TypeKind::Complex(_));
+        // Items grouped by owner once, in their order, rather than searched for every owner.
+        let mut by_owner: HashMap<String, Vec<Node>> = HashMap::new();
+        for i in items {
+            let key = crate::expand::hidden_key(&i, &owner_columns);
+            let node = if is_complex {
+                let mut r = i;
+                r.hidden.clear();
+                Node::Complex(Some(r))
+            } else {
+                Node::Value(i.value("value").cloned().unwrap_or(Value::Null))
+            };
+            by_owner.entry(key).or_default().push(node);
+        }
         for rec in records.iter_mut() {
             let want = record_key(rec, c.owner.iter().map(|p| p.source.as_str()));
-            let values: Vec<Node> = items
-                .iter()
-                .filter(|i| crate::expand::hidden_key(i, &targets) == want)
-                .map(|i| {
-                    if is_complex {
-                        let mut r = i.clone();
-                        r.hidden.clear();
-                        Node::Complex(Some(r))
-                    } else {
-                        Node::Value(i.value("value").cloned().unwrap_or(Value::Null))
-                    }
-                })
-                .collect();
+            let values = by_owner.get(&want).cloned().unwrap_or_default();
             let total = values.len() as i64;
-            let skip = own.and_then(|o| o.skip).unwrap_or(0) as usize;
-            let top = own.and_then(|o| o.top).map_or(usize::MAX, |t| t as usize);
-            let values = values.into_iter().skip(skip).take(top).collect();
+            let values = match paged {
+                Some(_) => values,
+                None => {
+                    let skip = own.and_then(|o| o.skip).unwrap_or(0) as usize;
+                    let top = own.and_then(|o| o.top).map_or(usize::MAX, |t| t as usize);
+                    values.into_iter().skip(skip).take(top).collect()
+                }
+            };
             rec.set(p.name.clone(), Node::Collection(values));
             if own.is_some_and(|o| o.count) {
                 rec.fields.push((p.name.clone(), Node::Count(total)));

@@ -1,0 +1,6 @@
+error: expected named fields
+ --> tests/ui/tuple_struct.rs:4:1
+  |
+4 | / #[odata(table = "thing")]
+5 | | pub struct Thing(i32);
+  | |______________________^
