@@ -113,6 +113,25 @@ impl Model {
             .unwrap_or(&[])
     }
 
+    /// The columns joining the table of a `Joined` type to its base: the key pairs, and the
+    /// tenant when the type has one. Every join, insert, update and delete of the derived table
+    /// must use all of them.
+    pub fn joined_columns(&self, t: &EntityType) -> Option<Vec<ColumnPair>> {
+        let Some(Inheritance::Joined {
+            join,
+            tenant_column,
+            ..
+        }) = &t.inheritance
+        else {
+            return None;
+        };
+        let mut pairs = join.clone();
+        if let (Some(column), Some(tenant)) = (tenant_column, self.tenant_of(&t.name)) {
+            pairs.push(ColumnPair::new(tenant.column.clone(), column.clone()));
+        }
+        Some(pairs)
+    }
+
     /// The tenant column of `type_name`, which may be declared on a base type.
     pub fn tenant_of(&self, type_name: &str) -> Option<&TenantColumn> {
         self.type_chain(type_name)
@@ -204,6 +223,9 @@ pub enum Inheritance {
         join: Vec<ColumnPair>,
         /// Optional discriminator column and value.
         discriminator: Option<(String, String)>,
+        /// The derived table's tenant column, required when the type has a tenant: keys are
+        /// only unique within a tenant, so the tables are joined on the tenant too.
+        tenant_column: Option<String>,
     },
 }
 

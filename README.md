@@ -144,6 +144,9 @@ therefore only has to be unique within a tenant.
 - **Collection and join tables.** Give them `tenant_column` when they have a tenant column of their
   own, which is required if their owner's key is only unique within a tenant. Without it, those
   tables are matched by the owner's key alone.
+- **Joined inheritance.** A derived type's table needs a tenant column too, named with
+  `joined(id = "asset_id", tenant_column = "tenant_id")`. `build` refuses a joined type with a
+  tenant but without it, because the tables would be joined on the key alone.
 - **Unlike row protection,** tenancy allows upserts and change tracking: a tenant's rows aren't
   hidden from it, and the change log keeps each tenant's changes apart. If a key is unique across
   tenants, a client that picks one another tenant holds gets a 409, so include the tenant in the key.

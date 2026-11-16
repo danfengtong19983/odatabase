@@ -271,7 +271,15 @@ pub fn entity(input: &DeriveInput) -> Result<TokenStream> {
                 Some((c, v)) => quote!(Some((#c.to_owned(), #v.to_owned()))),
                 None => quote!(None),
             };
-            quote!(Some(::odatabase::edm::Inheritance::Joined { join: #join, discriminator: #disc }))
+            let tenant = match &attrs.joined_tenant {
+                Some(c) => quote!(Some(#c.to_owned())),
+                None => quote!(None),
+            };
+            quote!(Some(::odatabase::edm::Inheritance::Joined {
+                join: #join,
+                discriminator: #disc,
+                tenant_column: #tenant,
+            }))
         }
         (None, Some((c, v))) => quote!(Some(::odatabase::edm::Inheritance::SingleTable {
             discriminator: #c.to_owned(),

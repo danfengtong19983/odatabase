@@ -637,8 +637,16 @@ impl Service {
             }
             let segs = [key_segment(type_name, &key)];
             for owner in l.own.iter().rev() {
-                if let Some(Inheritance::Joined { join, .. }) = &owner.inheritance {
+                if let Some(Inheritance::Joined {
+                    join,
+                    tenant_column,
+                    ..
+                }) = &owner.inheritance
+                {
+                    let tenant =
+                        tenant_cell(model, &req.claims, type_name, tenant_column.as_ref())?;
                     let cols = writes.columns(&owner.table);
+                    cols.extend(tenant);
                     for pair in join {
                         // Joined tables share the key of the root row.
                         let i =
@@ -1138,7 +1146,7 @@ impl Service {
             tables.push((t.clone(), Vec::new()));
         }
         for (table, mut sets) in tables {
-            let mut conds = table_conditions(&l, &table, &conditions);
+            let mut conds = table_conditions(model, &l, &table, &conditions);
             let is_etag_table = etag_table.as_deref() == Some(table.as_str());
             if is_etag_table {
                 sets.extend(stamp.clone());
@@ -2340,7 +2348,7 @@ impl Service {
         let l = layout(model, type_name)?;
         let conditions = key_conditions(model, &req.claims, type_name, key)?;
         for owner in &l.own {
-            if let Some(Inheritance::Joined { join, .. }) = &owner.inheritance {
+            if let Some(join) = model.joined_columns(owner) {
                 let cols: Vec<String> = join.iter().map(|p| p.source.clone()).collect();
                 let values = self
                     .column_values(req, session, &segs, type_name, &cols)
@@ -2557,11 +2565,19 @@ fn tenant_cell(
 }
 
 /// Key conditions for `table`: a `Joined` table holds the key under its own column names.
-fn table_conditions(l: &Layout<'_>, table: &str, key: &[ColumnValue]) -> Vec<ColumnValue> {
-    let joined = l.own.iter().find_map(|t| match &t.inheritance {
-        Some(Inheritance::Joined { join, .. }) if t.table == table => Some(join),
-        _ => None,
-    });
+/// With a tenant, `key` holds the tenant condition too, which maps to the joined table's own
+/// tenant column.
+fn table_conditions(
+    model: &Model,
+    l: &Layout<'_>,
+    table: &str,
+    key: &[ColumnValue],
+) -> Vec<ColumnValue> {
+    let joined = l
+        .own
+        .iter()
+        .filter(|t| t.table == table)
+        .find_map(|t| model.joined_columns(t));
     let Some(join) = joined else {
         return key.to_vec();
     };

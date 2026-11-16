@@ -160,7 +160,7 @@ impl<'a> Translator<'a> {
         let mut chain = model.type_chain(type_name);
         chain.reverse();
         for ty in &chain {
-            if let Some(Inheritance::Joined { join, .. }) = &ty.inheritance {
+            if let Some(join) = model.joined_columns(ty) {
                 let j = self.alias();
                 let on = and_all(join.iter().map(|p| {
                     col(&frame.alias, &p.source)
@@ -248,9 +248,13 @@ impl<'a> Translator<'a> {
     }
 
     /// Conditions from protected properties and query extensions.
-    fn row_restrictions(&self, frame: &Frame, type_name: &str) -> Result<Vec<Expr>, QueryError> {
+    fn row_restrictions(
+        &mut self,
+        frame: &Frame,
+        type_name: &str,
+    ) -> Result<Vec<Expr>, QueryError> {
         let model = self.ctx.model;
-        let mut out = Vec::new();
+        let mut out = self.hidden_subtypes(frame, type_name)?;
         for ty in model.type_chain(type_name) {
             if ty.query_extension {
                 let table = TableRef {
@@ -267,6 +271,43 @@ impl<'a> Translator<'a> {
             }
             for p in &ty.properties {
                 self.protect(frame, p, &ty.name, "", &mut out)?;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Leaves out the rows of derived types the caller can't see. Reading through a visible
+    /// base type would otherwise return them, and with them their own properties.
+    fn hidden_subtypes(&mut self, frame: &Frame, type_name: &str) -> Result<Vec<Expr>, QueryError> {
+        let model = self.ctx.model;
+        let mut out = Vec::new();
+        for d in model.derived_types(type_name) {
+            if self.ctx.claims.sees(&d.visible_for) {
+                continue;
+            }
+            let discriminator = match &d.inheritance {
+                Some(Inheritance::SingleTable { discriminator, .. })
+                | Some(Inheritance::Joined {
+                    discriminator: Some((discriminator, _)),
+                    ..
+                }) => Some(discriminator.clone()),
+                _ => None,
+            };
+            if let (Some(column), Some(is_hidden)) = (discriminator, self.discriminator(frame, d)?)
+            {
+                out.push(col(&frame.alias, &column).is_null().or(is_hidden.not()));
+            } else if let Some(join) = model.joined_columns(d) {
+                let alias = self.alias();
+                let mut q = Query::select();
+                q.expr(Expr::val(1));
+                q.from_as(Alias::new(d.table.as_str()), Alias::new(alias.as_str()));
+                self.owner_condition(&mut q, frame, &join, &alias);
+                out.push(exists(q).not());
+            } else {
+                return Err(QueryError::internal(format!(
+                    "{} can't be told apart from its base",
+                    d.name
+                )));
             }
         }
         Ok(out)
@@ -361,13 +402,24 @@ impl<'a> Translator<'a> {
     ) -> Result<Expr, QueryError> {
         let bind = |v: &Value| self.literal(v);
         Ok(match claim {
-            ClaimValue::Equals(Value::String(s))
-                if wildcards && s.contains(['*', '+', '%', '_']) =>
-            {
-                let pattern = s.replace('*', "%").replace('+', "_");
+            ClaimValue::Equals(Value::String(s)) if wildcards && s.contains(['*', '+']) => {
+                // `*` and `+` are the wildcards. `%`, `_` and the escape character itself are
+                // data, since identifiers such as `eu_west` commonly contain them.
+                let mut pattern = String::with_capacity(s.len());
+                for c in s.chars() {
+                    match c {
+                        '*' => pattern.push('%'),
+                        '+' => pattern.push('_'),
+                        '%' | '_' | '\\' => {
+                            pattern.push('\\');
+                            pattern.push(c);
+                        }
+                        c => pattern.push(c),
+                    }
+                }
                 tpl(
                     self.dialect(),
-                    "($1 LIKE $2)",
+                    "($1 LIKE $2 ESCAPE '\\')",
                     [column.clone(), Expr::val(pattern)],
                 )
             }
@@ -663,6 +715,33 @@ impl<'a> Translator<'a> {
             let first = match self.side_table_tenant(owner, &link, jt.tenant_column.as_ref())? {
                 Some(cond) => first.and(cond),
                 None => first,
+            };
+            // With `outerjoin`, a link whose target the caller can't see must not survive as a
+            // row of nulls: keep only links to visible targets.
+            let first = if outer {
+                let visible = Frame {
+                    alias: self.alias(),
+                    kind: FrameKind::Entity(t.name.clone()),
+                    joined: Vec::new(),
+                };
+                let mut q = Query::select();
+                q.expr(Expr::val(1));
+                q.from_as(
+                    Alias::new(self.root_table(&t.name)?),
+                    Alias::new(visible.alias.as_str()),
+                );
+                for p in &jt.target {
+                    q.and_where(equal(&link, &p.source, &visible.alias, &p.target));
+                }
+                if let Some(cond) = self.discriminator(&visible, t)? {
+                    q.and_where(cond);
+                }
+                for cond in self.row_restrictions(&visible, &t.name)? {
+                    q.and_where(cond);
+                }
+                first.and(exists(q))
+            } else {
+                first
             };
             sel.join_as(
                 kind,
@@ -988,13 +1067,18 @@ impl<'a> Translator<'a> {
             Step::Cast(type_name) => {
                 let t = self.ctx.model.entity_type(type_name);
                 let t = t.ok_or_else(|| QueryError::internal("unknown cast target"))?;
-                if let Some(Inheritance::Joined { join, .. }) = &t.inheritance
+                if !self.ctx.claims.sees(&t.visible_for) {
+                    return Err(QueryError::forbidden(format!(
+                        "{type_name} is not accessible"
+                    )));
+                }
+                if let Some(join) = self.ctx.model.joined_columns(t)
                     && !frame.joined.iter().any(|(n, _)| n == type_name)
                 {
                     let alias = self.alias();
                     let mut q = Query::select();
                     q.from_as(Alias::new(t.table.as_str()), Alias::new(alias.as_str()));
-                    self.owner_condition(&mut q, frame, join, &alias);
+                    self.owner_condition(&mut q, frame, &join, &alias);
                     let mut inner = frame.clone();
                     inner.joined.push((type_name.clone(), alias));
                     inner.kind = FrameKind::Entity(type_name.clone());
@@ -1506,16 +1590,16 @@ impl<'a> Translator<'a> {
                 let frame = it.clone();
                 match self.discriminator(&frame, t)? {
                     Some(cond) => Ok(cond),
-                    None => match &t.inheritance {
-                        Some(Inheritance::Joined { join, .. }) => {
+                    None => match self.ctx.model.joined_columns(t) {
+                        Some(join) => {
                             let alias = self.alias();
                             let mut q = Query::select();
                             q.expr(Expr::val(1));
                             q.from_as(Alias::new(t.table.as_str()), Alias::new(alias.as_str()));
-                            self.owner_condition(&mut q, &frame, join, &alias);
+                            self.owner_condition(&mut q, &frame, &join, &alias);
                             Ok(exists(q))
                         }
-                        _ => Ok(Expr::val(true)),
+                        None => Ok(Expr::val(true)),
                     },
                 }
             }
@@ -1542,6 +1626,10 @@ impl<'a> Translator<'a> {
                 })
             })
             .ok_or_else(|| QueryError::internal(format!("unknown function {name}")))?;
+        // The same check as a direct call: a hidden function stays hidden inside expressions.
+        if !self.ctx.claims.sees(&op.visible_for) {
+            return Err(QueryError::forbidden(format!("{name} is not accessible")));
+        }
         let Some(db_name) = &op.database_function else {
             return Err(QueryError::not_implemented(format!(
                 "{name} has no database function, so it cannot be used in expressions"

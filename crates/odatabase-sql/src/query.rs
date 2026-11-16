@@ -279,6 +279,18 @@ pub fn select_entity(
     options: &QueryOptions,
 ) -> Result<Layout, QueryError> {
     let model = tr.ctx.model;
+    // A cast in `$select` to a type the caller can't see is refused, as it is in a path.
+    for item in options.select.iter().flatten() {
+        if let SelectItem::Path(path) = item {
+            for step in path {
+                if let Some(t) = model.entity_type(step)
+                    && !tr.ctx.claims.sees(&t.visible_for)
+                {
+                    return Err(QueryError::forbidden(format!("{step} is not accessible")));
+                }
+            }
+        }
+    }
     let mut selection = Selection::from_items(model, options.select.as_deref());
     if let Selection::Some(tree) = &mut selection {
         for k in model.key_of(type_name) {
@@ -288,10 +300,15 @@ pub fn select_entity(
             tree.entry(e.name.clone()).or_insert(Selection::All);
         }
     }
-    let derived = model.derived_types(type_name);
+    // Rows of hidden derived types are left out by `enter`, and so are their properties.
+    let derived: Vec<_> = model
+        .derived_types(type_name)
+        .into_iter()
+        .filter(|d| tr.ctx.claims.sees(&d.visible_for))
+        .collect();
     let mut derived_sel = Vec::new();
     for d in &derived {
-        if let Some(Inheritance::Joined { join, .. }) = &d.inheritance {
+        if let Some(join) = model.joined_columns(d) {
             let j = tr.alias();
             let on = and_all(join.iter().map(|p| {
                 col(&frame.alias, &p.source)

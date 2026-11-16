@@ -221,6 +221,100 @@ async fn malformed_batches(app: App) {
     assert_eq!(batch(&app, many).await.status, StatusCode::BAD_REQUEST);
 }
 
+/// The boundary changes per response and never occurs in a part, so stored text can't end a
+/// part or forge one.
+async fn boundaries_are_unique(app: App) {
+    let forged = "x\r\n--batch_response--\r\n--batch_0000000000000000\r\nHTTP/1.1 200 OK\r\n";
+    let r = app
+        .request(
+            Method::PATCH,
+            "BusinessPartners('4')",
+            &[("content-type", "application/json")],
+            &json!({"Name": forged}).to_string(),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{}", r.text());
+    let boundary_of = |r: &common::Response| {
+        r.header("content-type")
+            .unwrap()
+            .split("boundary=")
+            .nth(1)
+            .unwrap()
+            .to_owned()
+    };
+    let r = batch(
+        &app,
+        get("BusinessPartners('4')/Name/$value") + &get("BusinessPartners('1')/Name/$value"),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let boundary = boundary_of(&r);
+    let text = r.text();
+    assert!(text.contains(forged), "the value comes back intact: {text}");
+    let delimiter = format!("--{boundary}");
+    assert_eq!(
+        text.matches(&delimiter).count(),
+        3,
+        "two parts and the end: {text}"
+    );
+    assert!(text.ends_with(&format!("--{boundary}--\r\n")));
+    let again = batch(&app, get("BusinessPartners('1')")).await;
+    assert_ne!(boundary_of(&again), boundary, "a new boundary per response");
+}
+
+/// Only entity references are rewritten: a string that happens to be `$1` is data.
+async fn content_ids_replace_only_references(app: App) {
+    let set = change_set(&[
+        change(
+            1,
+            "POST",
+            "BusinessPartners",
+            json!({"@odata.type": "#Test.Person", "Id": "90", "Active": true}),
+        ),
+        change(
+            2,
+            "POST",
+            "BusinessPartners",
+            json!({"@odata.type": "#Test.Person", "Id": "91", "Active": true,
+                   "Name": "$1", "FirstName": "$1/Roles", "Owner@odata.bind": "$1"}),
+        ),
+    ]);
+    let r = batch(&app, set).await;
+    assert_eq!(
+        r.text().matches("HTTP/1.1 201 Created").count(),
+        2,
+        "{}",
+        r.text()
+    );
+    let doc = app
+        .ok("BusinessPartners('91')?$expand=Owner($select=Id)")
+        .await;
+    assert_eq!(doc["Name"], "$1");
+    assert_eq!(doc["FirstName"], "$1/Roles");
+    assert_eq!(doc["Owner"]["Id"], "90", "the bind was resolved");
+}
+
+/// Parts are held to the same version checks as top-level requests.
+async fn parts_check_versions(app: App) {
+    let old = "--b\r\nContent-Type: application/http\r\nContent-Transfer-Encoding: binary\r\n\r\nGET BusinessPartners('1') HTTP/1.1\r\nOData-MaxVersion: 3.0\r\n\r\n\r\n";
+    let r = app
+        .request(
+            Method::POST,
+            "$batch",
+            &[MULTIPART, ("prefer", "odata.continue-on-error")],
+            &format!(
+                "{old}{}{}--b--\r\n",
+                get("BusinessPartners('1')?$schemaversion=9"),
+                get("BusinessPartners('1')?$schemaversion=*")
+            ),
+        )
+        .await;
+    let text = r.text();
+    assert!(text.contains("HTTP/1.1 400 Bad Request"), "{text}");
+    assert!(text.contains("HTTP/1.1 404 Not Found"), "{text}");
+    assert!(text.contains("HTTP/1.1 200 OK"), "{text}");
+}
+
 mod run {
     use super::common;
     use odatabase::{Database, Service};
@@ -237,5 +331,8 @@ mod run {
         get_in_a_change_set_fails,
         json_format,
         malformed_batches,
+        boundaries_are_unique,
+        content_ids_replace_only_references,
+        parts_check_versions,
     );
 }

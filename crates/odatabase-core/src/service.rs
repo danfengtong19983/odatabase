@@ -198,7 +198,8 @@ impl Service {
         Ok(uri)
     }
 
-    async fn dispatch(&self, req: &ODataRequest) -> Result<ODataResponse, ODataError> {
+    /// Refuses a request whose `OData-MaxVersion` is below 4.0. Batch parts are checked too.
+    pub(crate) fn check_max_version(req: &ODataRequest) -> Result<(), ODataError> {
         if let Some(v) = req
             .headers
             .get("odata-maxversion")
@@ -211,10 +212,14 @@ impl Service {
         {
             return Err(ODataError::bad_request("the service implements OData 4.0"));
         }
-        if let Some(response) = self.whole_service(req).await {
-            return response;
-        }
-        let uri = self.parse_uri(req)?;
+        Ok(())
+    }
+
+    /// Refuses a `$schemaversion` the service doesn't have. Batch parts are checked too.
+    pub(crate) fn check_schema_version(
+        &self,
+        uri: &odatabase_uri::ODataUri,
+    ) -> Result<(), ODataError> {
         if let Some(version) = &uri.options.schemaversion
             && version != "*"
             && self.inner.config.schema_version.as_ref() != Some(version)
@@ -223,6 +228,16 @@ impl Service {
                 "schema version {version} does not exist"
             )));
         }
+        Ok(())
+    }
+
+    async fn dispatch(&self, req: &ODataRequest) -> Result<ODataResponse, ODataError> {
+        Self::check_max_version(req)?;
+        if let Some(response) = self.whole_service(req).await {
+            return response;
+        }
+        let uri = self.parse_uri(req)?;
+        self.check_schema_version(&uri)?;
         if *uri.target() == odatabase_uri::Target::Batch && req.method == Method::POST {
             return self.batch(req).await;
         }

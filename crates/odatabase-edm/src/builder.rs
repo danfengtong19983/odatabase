@@ -252,6 +252,24 @@ fn validate(m: &Model) -> Result<(), ModelError> {
         {
             return bail(format!("{}: unknown base type {base}", t.name));
         }
+        if let Some(Inheritance::Joined { tenant_column, .. }) = &t.inheritance {
+            match (m.tenant_of(&t.name), tenant_column) {
+                (Some(_), None) => {
+                    return bail(format!(
+                        "{}: a joined type with a tenant needs joined(tenant_column = \"...\"), \
+                         or rows of other tenants with the same key are joined to it",
+                        t.name
+                    ));
+                }
+                (None, Some(_)) => {
+                    return bail(format!(
+                        "{}: joined(tenant_column) needs a tenant on the type",
+                        t.name
+                    ));
+                }
+                _ => {}
+            }
+        }
         if m.type_chain(&t.name)
             .last()
             .is_some_and(|root| root.base_type.is_some())
