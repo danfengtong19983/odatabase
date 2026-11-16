@@ -112,6 +112,10 @@ authentication.
 
 SQLite is well suited to tests and small services, with these limits:
 
+- The bundled SQLite library is affected by
+  [RUSTSEC-2026-0459](https://rustsec.org/advisories/RUSTSEC-2026-0459). The fix needs a `sqlx`
+  release that allows `libsqlite3-sys` 0.39, which hasn't been published yet. Read the advisory
+  before using the `sqlite` feature in production.
 - `Edm.Decimal` values are stored as doubles, so they lose precision beyond about 15 digits.
 - `$search` is substring matching rather than text search.
 - Date arithmetic is exact to the millisecond, not the microsecond.
