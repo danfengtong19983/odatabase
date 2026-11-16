@@ -55,7 +55,7 @@ use syn::{DeriveInput, parse_macro_input};
 /// | `abstract_type` | The type has no instances of its own |
 /// | `base = Type` | Derives from another entity type |
 /// | `discriminator(column = "...", value = "...")` | Single-table inheritance: rows of this type have this value |
-/// | `joined(id = "id")` | Joined inheritance: this type's table is joined to the base table on these columns |
+/// | `joined(id = "id", tenant_column = "...")` | Joined inheritance: this type's table is joined to the base table on these columns. `tenant_column` names the derived table's tenant column, and is required when the type has a tenant |
 /// | `has_stream(column = "...", content_type = "...", content_type_column = "...")` | A media entity whose stream is in `column` |
 /// | `track_changes` | Records changes in the change log, so reads can offer delta links |
 /// | `query_extension` | Every read is filtered by a registered `QueryExtension` |
@@ -77,7 +77,7 @@ use syn::{DeriveInput, parse_macro_input};
 /// | `collection(table = "...", owner(id = "owner_id"), value_column = "...", order_column = "...", tenant_column = "...")` | A collection stored in a child table. `value_column` is for primitive items |
 /// | `transient`, `transient(requires("A", "B"))` | Calculated by a registered `TransientCalculator` from the listed properties |
 /// | `description(table = "...", on(id = "id"), language_column = "...", text_column = "...")` | Language-dependent text from a description table |
-/// | `protected(claim = "...")`, `protected(claim = "...", wildcards)` | Rows are visible only if this column matches the caller's claim values |
+/// | `protected(claim = "...")`, `protected(claim = "...", wildcards)` | Rows are visible only if this column matches the caller's claim values. With `wildcards`, `*` in a claim value matches any text and `+` any one character; every other character, `%` and `_` included, matches itself |
 /// | `tenant`, `tenant(claim = "...")` | The tenant column. It isn't a property, and every statement is scoped by the claim, `tenant` by default |
 /// | `visible_for("group", ...)` | Only callers in one of the groups see the property |
 /// | `annotation(...)` | Adds an annotation, as on types |

@@ -154,10 +154,12 @@ impl Service {
 
     /// Runs an individual request, in its own transaction if it modifies data.
     async fn run_inner(&self, req: &ODataRequest) -> Result<ODataResponse, ODataError> {
+        Self::check_max_version(req)?;
         if let Some(response) = self.whole_service(req).await {
             return response;
         }
         let uri = self.parse_uri(req)?;
+        self.check_schema_version(&uri)?;
         match req.method {
             Method::GET => self.get(req, &uri).await,
             Method::POST | Method::PATCH | Method::PUT | Method::DELETE => {
@@ -263,17 +265,52 @@ fn resolve_references(url: &str, ids: &HashMap<String, String>) -> String {
     }
 }
 
-/// Replaces `"$id"` and `"$id/...` string values in a JSON body.
+/// Resolves `$id` references in the entity references of a JSON body: values of
+/// `@odata.bind`, `@odata.id` and `@id`. Other strings are data, even when they start with `$`.
 fn substitute_body(body: &Bytes, ids: &HashMap<String, String>) -> Bytes {
-    let Ok(text) = std::str::from_utf8(body) else {
+    let Ok(mut doc) = serde_json::from_slice::<Json>(body) else {
         return body.clone();
     };
-    let mut out = text.to_owned();
-    for (id, location) in ids {
-        out = out.replace(&format!("\"${id}\""), &format!("\"{location}\""));
-        out = out.replace(&format!("\"${id}/"), &format!("\"{location}/"));
+    if !substitute_references(&mut doc, ids) {
+        return body.clone();
     }
-    out.into()
+    serde_json::to_vec(&doc).map_or_else(|_| body.clone(), Bytes::from)
+}
+
+/// Whether anything was replaced.
+fn substitute_references(value: &mut Json, ids: &HashMap<String, String>) -> bool {
+    let resolve = |s: &mut String| {
+        let resolved = resolve_references(s, ids);
+        let changed = resolved != *s;
+        *s = resolved;
+        changed
+    };
+    let mut changed = false;
+    match value {
+        Json::Object(map) => {
+            for (key, v) in map.iter_mut() {
+                let reference = key.ends_with("@odata.bind") || key == "@odata.id" || key == "@id";
+                match v {
+                    Json::String(s) if reference => changed |= resolve(s),
+                    Json::Array(items) if reference => {
+                        for item in items {
+                            if let Json::String(s) = item {
+                                changed |= resolve(s);
+                            }
+                        }
+                    }
+                    _ => changed |= substitute_references(v, ids),
+                }
+            }
+        }
+        Json::Array(items) => {
+            for item in items {
+                changed |= substitute_references(item, ids);
+            }
+        }
+        _ => {}
+    }
+    changed
 }
 
 /// Splits a request URL into a path below the service root and a query string.
@@ -531,8 +568,35 @@ fn write_http(out: &mut Vec<u8>, reply: &Reply) {
     out.extend_from_slice(b"\r\n");
 }
 
+/// A boundary that occurs in no reply, so that no stored value can end or forge a part.
+fn boundary(groups: &[Group]) -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let replies: Vec<&Reply> = groups.iter().flat_map(|g| &g.replies).collect();
+    loop {
+        // Each `RandomState` is seeded differently, which is all a boundary needs.
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_usize(replies.len());
+        let token = format!("{:016x}", h.finish());
+        let clash = replies.iter().any(|r| {
+            contains(&r.response.body, token.as_bytes())
+                || r.response
+                    .headers
+                    .values()
+                    .any(|v| contains(v.as_bytes(), token.as_bytes()))
+        });
+        if !clash {
+            return token;
+        }
+    }
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
 fn multipart_reply(groups: &[Group]) -> ODataResponse {
-    let boundary = "batch_response";
+    let token = boundary(groups);
+    let boundary = format!("batch_{token}");
     let mut out = Vec::new();
     for (i, group) in groups.iter().enumerate() {
         out.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
@@ -542,7 +606,7 @@ fn multipart_reply(groups: &[Group]) -> ODataResponse {
             .iter()
             .any(|r| r.response.status.as_u16() >= 400);
         if group.atomic && !failed {
-            let inner = format!("changes_response_{i}");
+            let inner = format!("changeset_{token}_{i}");
             out.extend_from_slice(
                 format!("Content-Type: multipart/mixed; boundary={inner}\r\n\r\n").as_bytes(),
             );
@@ -561,7 +625,8 @@ fn multipart_reply(groups: &[Group]) -> ODataResponse {
     let mut r = ODataResponse::new(StatusCode::OK);
     r.headers.insert(
         header::CONTENT_TYPE,
-        HeaderValue::from_static("multipart/mixed; boundary=batch_response"),
+        HeaderValue::from_str(&format!("multipart/mixed; boundary={boundary}"))
+            .expect("hexadecimal digits are a valid header value"),
     );
     r.body = out.into();
     r
@@ -643,5 +708,17 @@ mod tests {
             substitute_body(&body, &ids),
             Bytes::from("{\"X@odata.bind\":\"http://h/A('x')\"}")
         );
+        // Data is left alone, even when it looks like a reference.
+        let body = Bytes::from_static(
+            b"{\"Note\":\"$1\",\"Path\":\"$1/x\",\"Items\":[{\"Y@odata.bind\":[\"$1\",\"B(2)\"]}],\"Ref\":{\"@odata.id\":\"$1\"}}",
+        );
+        let doc: Json = serde_json::from_slice(&substitute_body(&body, &ids)).unwrap();
+        assert_eq!(doc["Note"], "$1");
+        assert_eq!(doc["Path"], "$1/x");
+        assert_eq!(
+            doc["Items"][0]["Y@odata.bind"],
+            json!(["http://h/A('x')", "B(2)"])
+        );
+        assert_eq!(doc["Ref"]["@odata.id"], "http://h/A('x')");
     }
 }

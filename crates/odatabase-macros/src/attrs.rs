@@ -97,6 +97,7 @@ pub struct TypeAttrs {
     pub base: Option<Type>,
     pub discriminator: Option<(String, String)>,
     pub joined: Option<Pairs>,
+    pub joined_tenant: Option<String>,
     pub media: Option<(String, Option<String>, Option<String>)>,
     pub visible_for: Vec<String>,
     pub annotations: Vec<TokenStream>,
@@ -141,7 +142,11 @@ impl TypeAttrs {
                     })?;
                     t.discriminator = Some((column, value));
                 } else if m.path.is_ident("joined") {
-                    t.joined = Some(pairs(&m)?);
+                    let mut join = pairs(&m)?;
+                    if let Some(i) = join.iter().position(|(k, _)| k == "tenant_column") {
+                        t.joined_tenant = Some(join.remove(i).1);
+                    }
+                    t.joined = Some(join);
                 } else if m.path.is_ident("has_stream") {
                     let (mut column, mut ty, mut ty_col) = (String::new(), None, None);
                     m.parse_nested_meta(|d| {

@@ -12,6 +12,11 @@ ignore = [
     # starts the Postgres test database, so it never reaches users. Drop this once
     # testcontainers moves to a maintained tar crate.
     { id = "RUSTSEC-2026-0440", reason = "dev-only, through testcontainers" },
+    # A vulnerability in the SQLite C library that libsqlite3-sys bundles, fixed in 0.39.
+    # sqlx-sqlite 0.9.0, the newest release as of 2026-11-15, requires libsqlite3-sys < 0.38, so
+    # no update can reach the fix. It affects builds with the `sqlite` feature, and the README
+    # says so. Remove this entry once sqlx allows 0.39 and the lockfile is updated.
+    { id = "RUSTSEC-2026-0459", reason = "fix needs a sqlx release that allows libsqlite3-sys 0.39" },
 ]
 
 [licenses]
