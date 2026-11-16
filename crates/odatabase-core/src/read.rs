@@ -187,19 +187,33 @@ impl Service {
     }
 
     fn metadata(&self, req: &ODataRequest, uri: &ODataUri) -> Result<ODataResponse, ODataError> {
-        let filtered = crate::visibility::visible_model(&self.inner.model, &req.claims);
-        let model = filtered.as_ref().unwrap_or(&self.inner.model);
-        let mut response = if metadata_as_json(uri.options.format.as_deref(), &req.headers)? {
-            let body = to_csdl_json(model);
-            ODataResponse::json(
-                StatusCode::OK,
-                HeaderValue::from_static("application/json"),
-                &body,
-            )
+        let json = metadata_as_json(uri.options.format.as_deref(), &req.headers)?;
+        let (body, tag) = self.inner.metadata.get(
+            json,
+            &req.claims,
+            || {
+                let filtered = crate::visibility::visible_model(&self.inner.model, &req.claims);
+                let model = filtered.as_ref().unwrap_or(&self.inner.model);
+                match json {
+                    true => {
+                        ODataResponse::json(
+                            StatusCode::OK,
+                            HeaderValue::from_static("application/json"),
+                            &to_csdl_json(model),
+                        )
+                        .body
+                    }
+                    false => to_csdl_xml(model).into(),
+                }
+            },
+            |body| format!("\"{:016x}\"", fingerprint(body)),
+        );
+        let content_type = if json {
+            "application/json"
         } else {
-            ODataResponse::with_body(StatusCode::OK, "application/xml", to_csdl_xml(model))
+            "application/xml"
         };
-        let tag = format!("\"{:016x}\"", fingerprint(&response.body));
+        let mut response = ODataResponse::with_body(StatusCode::OK, content_type, body);
         if let Some(v) = req
             .headers
             .get(header::IF_NONE_MATCH)

@@ -25,6 +25,15 @@ pub struct Config {
     /// Time to answer a request. It frees the request, but a statement already running keeps
     /// going in the database: see `PostgresOptions::statement_timeout`.
     pub request_timeout: Option<Duration>,
+    /// Absolute URL of the service root as clients reach it, such as
+    /// `https://api.example.com/odata`. Links, `Location` headers and `@odata.context` are built
+    /// from it. Without it they are built from the request's `Host` and `X-Forwarded-Proto`
+    /// headers, which only a proxy that sets them makes trustworthy.
+    pub public_root: Option<String>,
+    /// Largest request body `mount` accepts, in bytes. 16 MiB by default.
+    pub max_body_size: usize,
+    /// Most requests in one `$batch`. 1000 by default.
+    pub max_batch_requests: usize,
 }
 
 impl Default for Config {
@@ -35,6 +44,9 @@ impl Default for Config {
             default_language: "en".to_owned(),
             schema_version: None,
             request_timeout: Some(Duration::from_secs(60)),
+            public_root: None,
+            max_body_size: 16 * 1024 * 1024,
+            max_batch_requests: 1000,
         }
     }
 }
@@ -49,6 +61,7 @@ pub(crate) struct Inner {
     pub operations: HashMap<String, Arc<dyn OperationHandler>>,
     pub calculators: HashMap<(String, String), Arc<dyn TransientCalculator>>,
     pub session_settings: Option<SessionSettings>,
+    pub metadata: crate::visibility::MetadataCache,
 }
 
 /// The database settings of a request, from its claims.
@@ -123,6 +136,11 @@ impl Service {
         Ok(())
     }
 
+    /// The service settings.
+    pub fn config(&self) -> &Config {
+        &self.inner.config
+    }
+
     /// The service model.
     pub fn model(&self) -> &Model {
         &self.inner.model
@@ -134,7 +152,10 @@ impl Service {
     }
 
     /// Answers one request. Failures become OData error responses.
-    pub async fn handle(&self, req: ODataRequest) -> ODataResponse {
+    pub async fn handle(&self, mut req: ODataRequest) -> ODataResponse {
+        if let Some(root) = &self.inner.config.public_root {
+            req.root = root.trim_end_matches('/').to_owned();
+        }
         let outcome = match self.inner.config.request_timeout {
             Some(limit) => tokio::time::timeout(limit, self.dispatch(&req))
                 .await
@@ -433,6 +454,7 @@ impl ServiceBuilder {
         }
         Ok(Service {
             inner: Arc::new(Inner {
+                metadata: crate::visibility::MetadataCache::new(&model),
                 model,
                 database: database.into(),
                 config: self.config,

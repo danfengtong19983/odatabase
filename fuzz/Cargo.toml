@@ -1,0 +1,32 @@
+[package]
+name = "odatabase-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+odatabase = { path = "../crates/odatabase", default-features = false }
+odatabase-uri = { path = "../crates/odatabase-uri" }
+
+# Not part of the main workspace: it builds with nightly and cargo-fuzz.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "uri"
+path = "fuzz_targets/uri.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "batch"
+path = "fuzz_targets/batch.rs"
+test = false
+doc = false
+bench = false

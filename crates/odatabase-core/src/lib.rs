@@ -25,6 +25,8 @@ mod visibility;
 mod wide;
 mod write;
 
+#[doc(hidden)]
+pub use batch::parse_batch_for_fuzzing;
 pub use change::{AcceptAll, ChangeContext, ChangeHandler, EntityKey};
 pub use format::{Format, MetadataLevel};
 #[cfg(feature = "postgres")]

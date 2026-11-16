@@ -17,6 +17,16 @@ pub struct Limits {
     pub max_expression_depth: u32,
     /// Nesting depth of `$expand`. 8 by default.
     pub max_expand_depth: u32,
+    /// Items in one `in (...)` list. 1000 by default.
+    pub max_in_items: usize,
+    /// Terms in one `$orderby`. 32 by default.
+    pub max_orderby_items: usize,
+    /// Items in one `$select`. 256 by default.
+    pub max_select_items: usize,
+    /// Whether `matchesPattern` is allowed. Its pattern runs as a regular expression in the
+    /// database, bounded only by `statement_timeout`, so a public service may turn it off.
+    /// `true` by default.
+    pub matches_pattern: bool,
 }
 
 impl Default for Limits {
@@ -24,6 +34,10 @@ impl Default for Limits {
         Self {
             max_expression_depth: 64,
             max_expand_depth: 8,
+            max_in_items: 1000,
+            max_orderby_items: 32,
+            max_select_items: 256,
+            matches_pattern: true,
         }
     }
 }
@@ -43,7 +57,7 @@ pub fn parse_with(
     let mut aliases = Aliases::new();
     for (name, value) in &raw {
         if let Some(alias) = name.strip_prefix('@') {
-            let max = limits.max_expression_depth;
+            let max = limits;
             let e = parse_expression(model, value, Scope::None, &Aliases::new(), max)?;
             aliases.insert(alias.to_owned(), e);
         }
@@ -490,8 +504,13 @@ impl PathBuilder<'_> {
     }
 
     fn literal(&self, text: &str) -> Result<Expr, UriError> {
-        let depth = self.limits.max_expression_depth;
-        parse_expression(self.model, text.trim(), Scope::None, self.aliases, depth)
+        parse_expression(
+            self.model,
+            text.trim(),
+            Scope::None,
+            self.aliases,
+            self.limits,
+        )
     }
 
     fn member(&mut self, t: &str, name: &str, args: Option<&str>) -> Result<(), UriError> {

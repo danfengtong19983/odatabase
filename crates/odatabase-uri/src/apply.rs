@@ -112,7 +112,7 @@ fn transformation(
         .map(|i| (&text[..i], &text[i + 1..text.len() - 1]))
         .ok_or_else(|| UriError::bad_request(format!("invalid transformation {text}")))?;
     let current = Scope::Applied(Arc::new(scope.clone()));
-    let max = ctx.limits.max_expression_depth;
+    let max = ctx.limits;
     let step = match name {
         "filter" => {
             let e = parse_expression(ctx.model, args, current, ctx.aliases, max)?;
@@ -272,7 +272,7 @@ fn compute(
     args: &str,
 ) -> Result<Transformation, UriError> {
     let mut items = Vec::new();
-    let max = ctx.limits.max_expression_depth;
+    let max = ctx.limits;
     for part in split_top_level(args, ',') {
         let (text, alias) = split_keyword(part.trim(), "as")
             .ok_or_else(|| UriError::bad_request("compute needs: expression as alias"))?;
@@ -418,7 +418,7 @@ fn rank(
             )));
         }
     };
-    let max = ctx.limits.max_expression_depth;
+    let max = ctx.limits;
     let amount = parse_expression(ctx.model, &amount_text, Scope::None, ctx.aliases, max)?;
     let value = parse_expression(ctx.model, &value_text, current.clone(), ctx.aliases, max)?;
     let numeric = |t: &ExprType| matches!(t, ExprType::Primitive(k) if k.is_numeric());
@@ -468,7 +468,7 @@ fn join(
         .ok_or_else(|| UriError::bad_request(format!("{name} needs: path as alias")))?;
     let alias = alias.trim().to_owned();
     check_alias(scope, ctx, &alias)?;
-    let max = ctx.limits.max_expression_depth;
+    let max = ctx.limits;
     let parsed = parse_expression(ctx.model, text, current.clone(), ctx.aliases, max)?;
     let Expr::Path(path) = parsed else {
         return Err(UriError::bad_request(format!(
@@ -520,7 +520,7 @@ fn expand_step(ctx: &OptionContext, owner: &str, args: &str) -> Result<ExpandIte
     let scope = Scope::Entity(nav.target.clone());
     for part in &parts[1..] {
         let part = part.trim();
-        let max = ctx.limits.max_expression_depth;
+        let max = ctx.limits;
         if let Some(text) = part
             .strip_prefix("filter(")
             .and_then(|p| p.strip_suffix(')'))
@@ -590,7 +590,7 @@ fn group_keys(
     current: &Scope,
     keys: &[String],
 ) -> Result<Vec<GroupKey>, UriError> {
-    let max = ctx.limits.max_expression_depth;
+    let max = ctx.limits;
     let mut out: Vec<GroupKey> = Vec::new();
     for item in keys {
         let expr = parse_expression(ctx.model, item, current.clone(), ctx.aliases, max)?;
@@ -708,7 +708,7 @@ fn aggregation(
         .ok_or_else(|| UriError::bad_request(format!("{text} needs an alias")))?;
     let (body, alias) = (body.trim(), alias.trim().to_owned());
     check_alias(scope, ctx, &alias)?;
-    let max = ctx.limits.max_expression_depth;
+    let max = ctx.limits;
     if body == "$count" {
         let ty = ExprType::Primitive(P::Int64);
         return Ok(Aggregation {

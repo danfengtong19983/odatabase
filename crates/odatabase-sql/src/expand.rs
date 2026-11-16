@@ -526,7 +526,7 @@ fn order_exprs(
 }
 
 /// Applies `$top` and `$skip` per parent with `ROW_NUMBER()`.
-fn windowed(
+pub(crate) fn windowed(
     sel: &mut SelectStatement,
     parent_alias: &str,
     cols: &[&str],

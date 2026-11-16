@@ -1,0 +1,5 @@
+error: unknown odata attribute on field
+ --> tests/ui/unknown_field_attribute.rs:6:13
+  |
+6 |     #[odata(kye)]
+  |             ^^^

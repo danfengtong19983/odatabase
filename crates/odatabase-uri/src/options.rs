@@ -42,7 +42,7 @@ pub fn apply_option(
     name: &str,
     value: &str,
 ) -> Result<(), UriError> {
-    let max = ctx.limits.max_expression_depth;
+    let max = ctx.limits;
     match name {
         "$filter" => {
             let e = parse_expression(ctx.model, value, scope.clone(), ctx.aliases, max)?;
@@ -112,7 +112,14 @@ pub fn orderby(
     value: &str,
 ) -> Result<Vec<OrderItem>, UriError> {
     let mut items = Vec::new();
-    for part in split_top_level(value, ',') {
+    let parts = split_top_level(value, ',');
+    if parts.len() > ctx.limits.max_orderby_items {
+        return Err(UriError::bad_request(format!(
+            "$orderby is limited to {} items",
+            ctx.limits.max_orderby_items
+        )));
+    }
+    for part in parts {
         let part = part.trim_matches([' ', '+']);
         let (text, descending) = if let Some(t) = strip_word(part, "desc") {
             (t, true)
@@ -121,7 +128,7 @@ pub fn orderby(
         } else {
             (part, false)
         };
-        let max = ctx.limits.max_expression_depth;
+        let max = ctx.limits;
         let expr = parse_expression(ctx.model, text, scope.clone(), ctx.aliases, max)?;
         match expr.ty() {
             ExprType::Primitive(_) | ExprType::Enum(_) | ExprType::Null => {}
@@ -246,7 +253,14 @@ fn select(
     nested: &mut Vec<(String, QueryOptions)>,
 ) -> Result<Vec<SelectItem>, UriError> {
     let mut items = Vec::new();
-    for raw in split_top_level(value, ',') {
+    let raws = split_top_level(value, ',');
+    if raws.len() > ctx.limits.max_select_items {
+        return Err(UriError::bad_request(format!(
+            "$select is limited to {} items",
+            ctx.limits.max_select_items
+        )));
+    }
+    for raw in raws {
         let raw = raw.trim();
         if raw == "*" {
             items.push(SelectItem::Star);

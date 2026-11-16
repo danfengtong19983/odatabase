@@ -9,7 +9,6 @@ use serde_json::{Map, Value as Json, json};
 use std::collections::HashMap;
 
 /// Requests per `$batch`. Each runs at least one statement.
-const MAX_REQUESTS: usize = 1000;
 
 #[derive(Debug, Clone)]
 struct SubRequest {
@@ -47,17 +46,7 @@ impl Service {
             .and_then(|v| v.to_str().ok())
             .ok_or_else(|| ODataError::bad_request("$batch needs a Content-Type"))?
             .to_owned();
-        let mut json_format = false;
-        let items = if content_type.starts_with("application/json") {
-            json_format = true;
-            parse_json(&req.body)?
-        } else if content_type.starts_with("multipart/mixed") {
-            let boundary = boundary_of(&content_type)
-                .ok_or_else(|| ODataError::bad_request("multipart/mixed needs a boundary"))?;
-            parse_multipart(&req.body, &boundary)?
-        } else {
-            return Err(ODataError::new(415, "$batch takes multipart/mixed or JSON"));
-        };
+        let (items, json_format) = parse_batch(&content_type, &req.body)?;
         let total: usize = items
             .iter()
             .map(|i| match i {
@@ -65,9 +54,10 @@ impl Service {
                 Item::ChangeSet(list) => list.len(),
             })
             .sum();
-        if total > MAX_REQUESTS {
+        let limit = self.inner.config.max_batch_requests;
+        if total > limit {
             return Err(ODataError::bad_request(format!(
-                "$batch is limited to {MAX_REQUESTS} requests"
+                "$batch is limited to {limit} requests"
             )));
         }
         let continue_on_error = req
@@ -336,6 +326,33 @@ fn split_url(url: &str, root: &str) -> Result<(String, String), ODataError> {
         Some((p, q)) => (p.to_owned(), q.to_owned()),
         None => (relative.to_owned(), String::new()),
     })
+}
+
+/// The items of a batch body, and whether it uses the JSON format.
+fn parse_batch(content_type: &str, body: &[u8]) -> Result<(Vec<Item>, bool), ODataError> {
+    if content_type.starts_with("application/json") {
+        Ok((parse_json(body)?, true))
+    } else if content_type.starts_with("multipart/mixed") {
+        let boundary = boundary_of(content_type)
+            .ok_or_else(|| ODataError::bad_request("multipart/mixed needs a boundary"))?;
+        Ok((parse_multipart(body, &boundary)?, false))
+    } else {
+        Err(ODataError::new(415, "$batch takes multipart/mixed or JSON"))
+    }
+}
+
+/// Parses a batch body without running it: the number of requests, or the error a client
+/// would get. For fuzzing the parser.
+#[doc(hidden)]
+pub fn parse_batch_for_fuzzing(content_type: &str, body: &[u8]) -> Result<usize, ODataError> {
+    let (items, _) = parse_batch(content_type, body)?;
+    Ok(items
+        .iter()
+        .map(|i| match i {
+            Item::Single(_) => 1,
+            Item::ChangeSet(list) => list.len(),
+        })
+        .sum())
 }
 
 fn boundary_of(content_type: &str) -> Option<String> {
