@@ -5,6 +5,13 @@ PostgreSQL or SQLite. The design follows
 [SAP/olingo-jpa-processor-v4](https://github.com/SAP/olingo-jpa-processor-v4), and also
 covers what that project gets from Apache Olingo: the model, URI parser, serializers and `$batch`.
 
+```bash
+cargo add odatabase
+```
+
+The `postgres`, `sqlite` and `axum` features are on by default. To keep one database, add
+`--no-default-features --features postgres,axum`.
+
 ```rust
 use odatabase::{Nav, ODataEntity, Service};
 
