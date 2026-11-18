@@ -5,6 +5,12 @@ before 1.0, a minor version may break the API, and its entry says how to migrate
 
 ## Unreleased
 
+- **`rename_all`.** `#[odata(rename_all = "snake_case")]`, `"camelCase"` or `"PascalCase"` on an
+  entity or complex type names the properties and navigation properties of its fields without a
+  `name`. The default stays `PascalCase`.
+- **Fix:** a field with a raw identifier such as `r#type` now maps to the column `type` and the
+  property `Type`, rather than `r#type` and `R#type`.
+
 ## 0.1.0 - 2026-11-16
 
 First release.

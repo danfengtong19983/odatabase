@@ -157,3 +157,117 @@ fn csdl_json_describes_the_service() {
         "Test.BusinessPartner"
     );
 }
+
+#[derive(ODataComplex)]
+#[odata(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct PostalAddress {
+    street_name: Option<String>,
+    #[odata(name = "Zip")]
+    postal_code: Option<String>,
+}
+
+#[derive(ODataEntity)]
+#[odata(table = "work_item", set = "work_items", rename_all = "snake_case")]
+#[allow(dead_code)]
+struct WorkItem {
+    #[odata(key)]
+    id: i32,
+    #[odata(etag)]
+    row_version: i64,
+    assignee_id: Option<i32>,
+    r#type: String,
+    #[odata(name = "Label")]
+    display_label: Option<String>,
+    #[odata(embedded(prefix = "ship_"))]
+    ship_to: PostalAddress,
+    #[odata(has_many(target = WorkNote, on(id = "work_item_id"), partner = "workItem"))]
+    work_notes: Nav,
+}
+
+#[derive(ODataEntity)]
+#[odata(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct WorkNote {
+    #[odata(key)]
+    note_id: i32,
+    work_item_id: i32,
+    #[odata(belongs_to(target = WorkItem, on(work_item_id = "id"), required, partner = "work_notes"))]
+    work_item: Nav,
+}
+
+fn renamed_model() -> odatabase::edm::Model {
+    ModelBuilder::new("Test")
+        .entity::<WorkItem>()
+        .build()
+        .unwrap()
+}
+
+#[test]
+fn rename_all_names_properties_and_navigations() {
+    let m = renamed_model();
+    let t = m.entity_type("WorkItem").unwrap();
+    assert_eq!(t.key, ["id"]);
+    assert_eq!(t.etag.as_deref(), Some("row_version"));
+    let names: Vec<_> = t.properties.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "id",
+            "row_version",
+            "assignee_id",
+            "type",
+            "Label",
+            "ship_to"
+        ],
+        "snake_case keeps Rust names, raw identifiers lose `r#`, and `name` wins"
+    );
+    assert_eq!(m.property("WorkItem", "type").unwrap().column, "type");
+    assert_eq!(
+        m.property("WorkItem", "assignee_id").unwrap().column,
+        "assignee_id"
+    );
+    assert_eq!(t.navigation[0].name, "work_notes");
+    assert!(m.entity_sets.contains_key("work_items"));
+
+    let note = m.entity_type("WorkNote").unwrap();
+    assert_eq!(note.key, ["noteId"]);
+    assert_eq!(note.navigation[0].name, "workItem");
+
+    let address = m.complex_type("PostalAddress").unwrap();
+    let names: Vec<_> = address.properties.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["streetName", "Zip"]);
+    assert_eq!(address.properties[0].column, "street_name");
+}
+
+#[test]
+fn rename_all_reaches_the_metadata() {
+    let xml = to_csdl_xml(&renamed_model());
+    for fragment in [
+        "<PropertyRef Name=\"id\"/>",
+        "<Property Name=\"assignee_id\" Type=\"Edm.Int32\"/>",
+        "<NavigationProperty Name=\"work_notes\" Type=\"Collection(Test.WorkNote)\" Partner=\"workItem\"/>",
+        "<Property Name=\"streetName\" Type=\"Edm.String\"/>",
+    ] {
+        assert!(xml.contains(fragment), "missing {fragment} in:\n{xml}");
+    }
+}
+
+#[derive(ODataEntity)]
+#[odata(table = "kinded")]
+#[allow(dead_code)]
+struct Kinded {
+    #[odata(key)]
+    id: i32,
+    r#type: String,
+}
+
+#[test]
+fn raw_identifiers_lose_their_prefix() {
+    let m = ModelBuilder::new("Test")
+        .entity::<Kinded>()
+        .build()
+        .unwrap();
+    let p = m.property("Kinded", "Type").unwrap();
+    assert_eq!(p.column, "type");
+}

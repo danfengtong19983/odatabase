@@ -57,7 +57,9 @@ curl -G 'http://127.0.0.1:3000/odata/Customers' --data-urlencode "\$filter=Addre
 
 The structs describe the model and are never filled: rows are read according to the model at
 runtime. Field names map to columns as they are (`first_name`), and to Edm names in
-upper camel case (`FirstName`). Set `name` or `column` to override either.
+upper camel case (`FirstName`). Set `name` or `column` to override either, or
+`#[odata(rename_all = "snake_case")]` or `"camelCase"` on the type to name all its properties
+that way.
 
 ## What it supports
 

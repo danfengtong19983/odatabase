@@ -1,0 +1,5 @@
+error: expected "PascalCase", "camelCase" or "snake_case"
+ --> tests/ui/unknown_rename_rule.rs:4:39
+  |
+4 | #[odata(table = "thing", rename_all = "kebab-case")]
+  |                                       ^^^^^^^^^^^^

@@ -396,6 +396,16 @@ pub fn edm_case(field: &str) -> String {
     out
 }
 
+/// `first_name` to `firstName`, the Edm name of a Rust field under `rename_all = "camelCase"`.
+pub fn camel_case(field: &str) -> String {
+    let pascal = edm_case(field);
+    let mut chars = pascal.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().chain(chars).collect(),
+        None => pascal,
+    }
+}
+
 /// `BusinessPartner` to `BusinessPartners`, the default entity set name.
 pub fn plural(name: &str) -> String {
     if let Some(stem) = name.strip_suffix('y')
@@ -449,6 +459,8 @@ mod tests {
     #[test]
     fn names() {
         assert_eq!(edm_case("first_name"), "FirstName");
+        assert_eq!(camel_case("first_name"), "firstName");
+        assert_eq!(camel_case("id"), "id");
         assert_eq!(plural("Company"), "Companies");
         assert_eq!(plural("Day"), "Days");
         assert_eq!(plural("Address"), "Addresses");

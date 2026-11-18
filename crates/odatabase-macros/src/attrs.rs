@@ -103,6 +103,34 @@ pub struct TypeAttrs {
     pub annotations: Vec<TokenStream>,
     pub query_extension: bool,
     pub track_changes: bool,
+    pub rename_all: RenameRule,
+}
+
+/// How a field's Rust name becomes its property name, unless the field sets `name`.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum RenameRule {
+    /// `first_name` to `FirstName`.
+    #[default]
+    Pascal,
+    /// `first_name` to `firstName`.
+    Camel,
+    /// `first_name` stays `first_name`.
+    Snake,
+}
+
+impl RenameRule {
+    fn parse(meta: &ParseNestedMeta) -> Result<Self> {
+        let lit = meta.value()?.parse::<LitStr>()?;
+        match lit.value().as_str() {
+            "PascalCase" => Ok(Self::Pascal),
+            "camelCase" => Ok(Self::Camel),
+            "snake_case" => Ok(Self::Snake),
+            _ => Err(syn::Error::new_spanned(
+                lit,
+                "expected \"PascalCase\", \"camelCase\" or \"snake_case\"",
+            )),
+        }
+    }
 }
 
 impl TypeAttrs {
@@ -124,6 +152,8 @@ impl TypeAttrs {
                     t.singleton = Some(string(&m)?);
                 } else if m.path.is_ident("track_changes") {
                     t.track_changes = true;
+                } else if m.path.is_ident("rename_all") {
+                    t.rename_all = RenameRule::parse(&m)?;
                 } else if m.path.is_ident("abstract_type") {
                     t.is_abstract = true;
                 } else if m.path.is_ident("base") {

@@ -12,8 +12,8 @@ mod value;
 
 pub use builder::{
     Binary, EdmEntity, EdmField, FieldType, GeographyLineString, GeographyPoint, GeographyPolygon,
-    GeometryLineString, GeometryPoint, GeometryPolygon, ModelBuilder, ModelError, Nav, edm_case,
-    plural, snake_case,
+    GeometryLineString, GeometryPoint, GeometryPolygon, ModelBuilder, ModelError, Nav, camel_case,
+    edm_case, plural, snake_case,
 };
 pub use csdl_json::to_csdl_json;
 pub use csdl_xml::to_csdl_xml;
