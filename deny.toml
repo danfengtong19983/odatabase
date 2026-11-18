@@ -17,6 +17,11 @@ ignore = [
     # no update can reach the fix. It affects builds with the `sqlite` feature, and the README
     # says so. Remove this entry once sqlx allows 0.39 and the lockfile is updated.
     { id = "RUSTSEC-2026-0459", reason = "fix needs a sqlx release that allows libsqlite3-sys 0.39" },
+    # chrono is unmaintained (announced 2026-11), with no fixed release; it reports no
+    # vulnerability. Its types are part of odatabase's API (date and time values, derive field
+    # types), and sqlx and sea-query depend on it too, so leaving it is a breaking change that
+    # needs a decision on jiff or time and support for it in sqlx and sea-query. Revisit then.
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained, no vulnerability; chrono is in the public API and in sqlx and sea-query" },
 ]
 
 [licenses]
