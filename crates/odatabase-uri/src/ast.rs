@@ -311,6 +311,10 @@ pub enum SearchExpr {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExprType {
     Null,
+    /// A dynamic property whose type the expression has not fixed yet. A comparison, a function
+    /// or a cast gives it the type it needs; the database answers null where the stored JSON is
+    /// of another type.
+    Untyped,
     Primitive(PrimitiveKind),
     Enum(String),
     Complex(String),
@@ -412,6 +416,9 @@ pub enum PathRoot {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Step {
     Property(String),
+    /// A dynamic property of an open type, or a member inside one. Every step after the first
+    /// dynamic one is dynamic too.
+    Dynamic(String),
     Navigation(String),
     Cast(String),
     Count,

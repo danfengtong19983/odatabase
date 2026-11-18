@@ -30,6 +30,8 @@ pub struct EntityPayload {
     pub deltas: Vec<(String, Vec<DeltaItem>)>,
     /// `@odata.etag` of a nested entity, checked before it is updated.
     pub etag: Option<String>,
+    /// Dynamic properties of an open type, as given. A null removes the property on update.
+    pub dynamic: Vec<(String, Json)>,
 }
 
 /// One entry of a delta payload.
@@ -178,7 +180,9 @@ fn read_entity(
             .or(obj.get("@etag"))
             .and_then(Json::as_str)
             .map(str::to_owned),
+        dynamic: Vec::new(),
     };
+    let open = model.open_column(&type_name).is_some();
     for (name, json) in obj {
         if let Some(nav) = name
             .strip_suffix("@odata.bind")
@@ -243,13 +247,26 @@ fn read_entity(
             out.nested.push((name.clone(), nested));
             continue;
         }
-        let p = model
-            .property(&type_name, name)
-            .ok_or_else(|| ODataError::bad_request(format!("unknown property {name}")))?;
+        let Some(p) = model.property(&type_name, name) else {
+            if open && !name.contains('.') && is_identifier(name) {
+                out.dynamic.push((name.clone(), json.clone()));
+                continue;
+            }
+            return Err(ODataError::bad_request(format!("unknown property {name}")));
+        };
         out.values
             .push((name.clone(), read_property(model, p, json, depth)?));
     }
     Ok(out)
+}
+
+/// Whether `name` is an OData simple identifier, which a dynamic property's name must be so
+/// that `$filter` and `$select` can name it.
+fn is_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|c| c == '_' || c.is_alphabetic())
+        && chars.all(|c| c == '_' || c.is_alphanumeric())
+        && name.chars().count() <= 128
 }
 
 fn concrete_type(

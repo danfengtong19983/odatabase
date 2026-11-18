@@ -181,17 +181,15 @@ impl ExprParser<'_> {
     }
 
     fn logical(&self, op: BinaryOp, l: Expr, r: Expr) -> Result<Expr, UriError> {
-        require_bool(&l)?;
-        require_bool(&r)?;
+        let (l, r) = (boolean(l)?, boolean(r)?);
         Ok(Expr::Binary(op, Box::new(l), Box::new(r)))
     }
 
     fn not_expr(&mut self) -> Result<Expr, UriError> {
         if self.accept_word("not") {
             self.enter()?;
-            let inner = self.not_expr()?;
+            let inner = boolean(self.not_expr()?)?;
             self.depth -= 1;
-            require_bool(&inner)?;
             return Ok(Expr::Not(Box::new(inner)));
         }
         self.comparison()
@@ -224,13 +222,16 @@ impl ExprParser<'_> {
         Ok(Expr::Binary(op, Box::new(left), Box::new(right)))
     }
 
-    fn in_list(&mut self, left: Expr) -> Result<Expr, UriError> {
+    fn in_list(&mut self, mut left: Expr) -> Result<Expr, UriError> {
         self.expect(&Token::LParen, "( after in")?;
         let mut items = Vec::new();
         if !self.accept(&Token::RParen) {
             loop {
                 let item = self.or_expr()?;
-                let (_, item) = self.unify(left.clone(), item)?;
+                let (settled, item) = self.unify(left.clone(), item)?;
+                if left.ty() == ExprType::Untyped {
+                    left = settled;
+                }
                 self.check_comparable(BinaryOp::Eq, &left, &item)?;
                 items.push(item);
                 if items.len() > self.limits.max_in_items {
@@ -276,7 +277,9 @@ impl ExprParser<'_> {
             }
         };
         let (lt, rt) = (l.ty(), r.ty());
-        Ok((fit(l, &rt)?, fit(r, &lt)?))
+        let (l, r) = (fit(l, &rt)?, fit(r, &lt)?);
+        let (lt, rt) = (l.ty(), r.ty());
+        Ok((settle_against(l, &rt)?, settle_against(r, &lt)?))
     }
 
     fn check_comparable(&self, op: BinaryOp, l: &Expr, r: &Expr) -> Result<(), UriError> {
@@ -284,6 +287,7 @@ impl ExprParser<'_> {
         let (lt, rt) = (l.ty(), r.ty());
         let ok = match (&lt, &rt) {
             (ExprType::Null, _) | (_, ExprType::Null) => true,
+            (ExprType::Untyped, ExprType::Untyped) => true,
             (ExprType::Primitive(a), ExprType::Primitive(b)) => {
                 a == b
                     || (a.is_numeric() && b.is_numeric())
@@ -340,7 +344,7 @@ impl ExprParser<'_> {
     fn unary(&mut self) -> Result<Expr, UriError> {
         if self.accept(&Token::Minus) {
             self.enter()?;
-            let inner = self.unary()?;
+            let inner = settle(self.unary()?, PrimitiveKind::Decimal)?;
             self.depth -= 1;
             let duration = inner.ty() == ExprType::Primitive(PrimitiveKind::Duration);
             if !inner.ty().is_numeric() && !duration {
@@ -462,6 +466,7 @@ impl ExprParser<'_> {
                 "wrong argument count for {f:?}"
             )));
         }
+        let args = settle_arguments(f, args)?;
         check_arguments(f, &args)?;
         Ok(Expr::Call(f, args))
     }
@@ -507,6 +512,17 @@ impl ExprParser<'_> {
             let value = self.or_expr()?;
             self.expect(&Token::Comma, ",")?;
             let ty = self.type_name()?;
+            if value.ty() == ExprType::Untyped {
+                // Reading the JSON as the type is the cast: there is nothing left to convert.
+                let ExprType::Primitive(k) = ty else {
+                    return Err(UriError::bad_request(format!(
+                        "a dynamic property cannot be cast to {ty:?}"
+                    )));
+                };
+                let value = settle(value, k)?;
+                self.expect(&Token::RParen, ")")?;
+                return Ok(value);
+            }
             Expr::Cast(Box::new(value), ty)
         };
         self.expect(&Token::RParen, ")")?;
@@ -717,8 +733,12 @@ impl ExprParser<'_> {
                     };
                     return Ok((Step::Navigation(name.to_owned()), ty));
                 }
+                if self.model.open_column(t).is_some() {
+                    return Ok((Step::Dynamic(name.to_owned()), ExprType::Untyped));
+                }
                 Err(unknown())
             }
+            ExprType::Untyped => Ok((Step::Dynamic(name.to_owned()), ExprType::Untyped)),
             ExprType::Complex(t) => {
                 let c = self.model.complex_type(t).ok_or_else(unknown)?;
                 let p = c
@@ -764,9 +784,8 @@ impl ExprParser<'_> {
             )));
         }
         self.vars.push((var.clone(), element));
-        let body = self.or_expr()?;
+        let body = boolean(self.or_expr()?)?;
         self.vars.pop();
-        require_bool(&body)?;
         self.expect(&Token::RParen, ")")?;
         Ok(Expr::Lambda {
             source,
@@ -790,9 +809,11 @@ pub fn property_type(p: &odatabase_edm::Property) -> ExprType {
     }
 }
 
-fn require_bool(e: &Expr) -> Result<(), UriError> {
+/// Requires a boolean expression, giving a dynamic property that type.
+pub fn boolean(e: Expr) -> Result<Expr, UriError> {
+    let e = settle(e, PrimitiveKind::Boolean)?;
     if e.ty().is_boolean() {
-        Ok(())
+        Ok(e)
     } else {
         Err(UriError::bad_request(format!(
             "expected a boolean, found {:?}",
@@ -801,7 +822,47 @@ fn require_bool(e: &Expr) -> Result<(), UriError> {
     }
 }
 
+/// Gives a dynamic property the type its context needs. Other expressions are returned as
+/// they are. A dynamic property holds JSON, so it can be read as a string, a number or a
+/// boolean.
+pub fn settle(e: Expr, kind: PrimitiveKind) -> Result<Expr, UriError> {
+    match e {
+        Expr::Path(mut p) if p.ty == ExprType::Untyped => {
+            if !(kind == PrimitiveKind::String
+                || kind == PrimitiveKind::Boolean
+                || kind.is_numeric())
+            {
+                return Err(UriError::bad_request(format!(
+                    "a dynamic property can be used as a string, a number or a boolean, not as {}",
+                    kind.edm_name()
+                )));
+            }
+            p.ty = ExprType::Primitive(kind);
+            Ok(Expr::Path(p))
+        }
+        other => Ok(other),
+    }
+}
+
+/// Settles a dynamic property against the type of the other operand.
+fn settle_against(e: Expr, other: &ExprType) -> Result<Expr, UriError> {
+    if e.ty() != ExprType::Untyped {
+        return Ok(e);
+    }
+    match other {
+        ExprType::Primitive(k) => settle(e, *k),
+        ExprType::Null | ExprType::Untyped => Ok(e),
+        _ => Err(UriError::bad_request(format!(
+            "a dynamic property cannot be compared with {other:?}"
+        ))),
+    }
+}
+
 fn arithmetic(op: BinaryOp, l: Expr, r: Expr) -> Result<Expr, UriError> {
+    let (l, r) = (
+        settle(l, PrimitiveKind::Decimal)?,
+        settle(r, PrimitiveKind::Decimal)?,
+    );
     let (lt, rt) = (l.ty(), r.ty());
     let defined = match is_temporal(&lt) || is_temporal(&rt) {
         true => temporal_result(op, &lt, &rt).is_some(),
@@ -815,6 +876,33 @@ fn arithmetic(op: BinaryOp, l: Expr, r: Expr) -> Result<Expr, UriError> {
         )));
     }
     Ok(Expr::Binary(op, Box::new(l), Box::new(r)))
+}
+
+/// Gives dynamic arguments the type the function takes.
+fn settle_arguments(f: Func, args: Vec<Expr>) -> Result<Vec<Expr>, UriError> {
+    use PrimitiveKind as P;
+    args.into_iter()
+        .enumerate()
+        .map(|(i, a)| match f {
+            Func::Contains
+            | Func::StartsWith
+            | Func::EndsWith
+            | Func::Length
+            | Func::IndexOf
+            | Func::ToLower
+            | Func::ToUpper
+            | Func::Trim
+            | Func::Concat
+            | Func::MatchesPattern => settle(a, P::String),
+            Func::Substring if i == 0 => settle(a, P::String),
+            Func::Substring => settle(a, P::Int32),
+            Func::Round | Func::Floor | Func::Ceiling => settle(a, P::Decimal),
+            _ if a.ty() == ExprType::Untyped => Err(UriError::bad_request(format!(
+                "{f:?} does not take a dynamic property; dates in JSON are strings"
+            ))),
+            _ => Ok(a),
+        })
+        .collect()
 }
 
 fn check_arguments(f: Func, args: &[Expr]) -> Result<(), UriError> {

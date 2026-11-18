@@ -80,6 +80,9 @@ fn entity_type(m: &Model, t: &EntityType) -> Json {
     if t.media.is_some() {
         o.insert("$HasStream".into(), true.into());
     }
+    if m.open_column(&t.name).is_some() {
+        o.insert("$OpenType".into(), true.into());
+    }
     if !t.key.is_empty() {
         o.insert("$Key".into(), t.key.clone().into());
     }

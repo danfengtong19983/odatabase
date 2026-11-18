@@ -162,6 +162,9 @@ impl Xml<'_> {
         if t.media.is_some() {
             self.out.push_str(" HasStream=\"true\"");
         }
+        if self.model.open_column(&t.name).is_some() {
+            self.out.push_str(" OpenType=\"true\"");
+        }
         self.out.push_str(">\n");
         if !t.key.is_empty() {
             self.out.push_str("<Key>");

@@ -67,6 +67,18 @@ pub struct ColumnWrite {
     pub value: Value,
     /// The property's type, which says how enums are stored. `None` for primitives.
     pub kind: Option<TypeKind>,
+    /// A write to a JSON column, in place of `value`.
+    pub json: Option<JsonWrite>,
+}
+
+/// A write to a JSON column, such as an open type's dynamic properties.
+#[derive(Clone, Debug, PartialEq)]
+pub enum JsonWrite {
+    /// Stores this document.
+    Replace(serde_json::Value),
+    /// Sets members of the stored object, which starts empty if the column is null, and
+    /// removes those given as `None`. Values replace members whole; objects aren't merged.
+    Merge(Vec<(String, Option<serde_json::Value>)>),
 }
 
 impl ColumnWrite {
@@ -76,8 +88,79 @@ impl ColumnWrite {
             column: column.into(),
             value,
             kind,
+            json: None,
         }
     }
+
+    /// A write to a JSON column: `jsonb`, `json` or text on Postgres, text on SQLite.
+    pub fn json(column: impl Into<String>, write: JsonWrite) -> Self {
+        Self {
+            column: column.into(),
+            value: Value::Null,
+            kind: None,
+            json: Some(write),
+        }
+    }
+}
+
+/// The SQL expression a column write assigns.
+fn assigned(model: &Model, dialect: Dialect, c: &ColumnWrite) -> Result<Expr, QueryError> {
+    let Some(json) = &c.json else {
+        return Ok(Expr::value(bind(
+            model,
+            dialect,
+            &c.value,
+            c.kind.as_ref(),
+        )?));
+    };
+    let pg = dialect == Dialect::Postgres;
+    let doc = |v: &serde_json::Value| -> Expr {
+        let text = Expr::val(v.to_string());
+        if pg {
+            Expr::cust_with_exprs("CAST($1 AS jsonb)", [text])
+        } else {
+            Expr::cust_with_exprs("json(?)", [text])
+        }
+    };
+    let set = match json {
+        JsonWrite::Replace(v) => return Ok(doc(v)),
+        JsonWrite::Merge(set) => set,
+    };
+    let current = Expr::col(Alias::new(c.column.as_str()));
+    if pg {
+        // `||` replaces members whole, and `-` removes one.
+        let added: serde_json::Map<String, serde_json::Value> = set
+            .iter()
+            .filter_map(|(k, v)| Some((k.clone(), v.clone()?)))
+            .collect();
+        let mut sql = "(COALESCE(CAST($1 AS jsonb), '{}'::jsonb) || $2)".to_owned();
+        let mut args = vec![current, doc(&serde_json::Value::Object(added))];
+        for (k, v) in set {
+            if v.is_none() {
+                args.push(Expr::val(k.clone()));
+                sql = format!("({sql} - ${})", args.len());
+            }
+        }
+        return Ok(Expr::cust_with_exprs(sql, args));
+    }
+    let path = |k: &str| Expr::val(format!("$.\"{k}\""));
+    let mut removed = vec![current];
+    let mut sql_removed = "json_remove(COALESCE(?, '{}')".to_owned();
+    let mut added = Vec::new();
+    let mut sql_added = String::new();
+    for (k, v) in set {
+        // Removed first, so a value set to an object replaces the old one instead of merging.
+        removed.push(path(k));
+        sql_removed.push_str(", ?");
+        if let Some(v) = v {
+            added.push(path(k));
+            added.push(Expr::val(v.to_string()));
+            sql_added.push_str(", ?, json(?)");
+        }
+    }
+    sql_removed.push(')');
+    let sql = format!("json_set({sql_removed}{sql_added})");
+    Ok(Expr::cust_with_exprs(sql, removed.into_iter().chain(added)))
 }
 
 /// `INSERT`, returning `returning` columns in their natural types.
@@ -97,12 +180,7 @@ pub async fn insert(
         stmt.columns(columns.iter().map(|c| Alias::new(c.column.as_str())));
         let mut values = Vec::with_capacity(columns.len());
         for c in columns {
-            values.push(Expr::value(bind(
-                model,
-                dialect,
-                &c.value,
-                c.kind.as_ref(),
-            )?));
+            values.push(assigned(model, dialect, c)?);
         }
         stmt.values(values)
             .map_err(|e| QueryError::internal(e.to_string()))?;
@@ -135,8 +213,7 @@ pub async fn update(
         return Ok(1);
     }
     for c in sets {
-        let v = bind(model, dialect, &c.value, c.kind.as_ref())?;
-        stmt.value(Alias::new(c.column.as_str()), Expr::value(v));
+        stmt.value(Alias::new(c.column.as_str()), assigned(model, dialect, c)?);
     }
     if let Some(column) = version_bump {
         stmt.value(Alias::new(column), Expr::col(Alias::new(column)).add(1));
