@@ -18,8 +18,9 @@ use syn::{DeriveInput, parse_macro_input};
 /// Declares an entity type backed by a table.
 ///
 /// The struct describes the model and is never filled with data. Fields map to columns of the
-/// same name and to properties in upper camel case (`first_name` is `FirstName`). The entity set
-/// is named with the plural of the type name, and the table with its snake case.
+/// same name and to properties in upper camel case (`first_name` is `FirstName`), unless the type
+/// sets `rename_all`. The entity set is named with the plural of the type name, and the table
+/// with its snake case.
 ///
 /// ```ignore
 /// #[derive(ODataEntity)]
@@ -58,6 +59,7 @@ use syn::{DeriveInput, parse_macro_input};
 /// | `joined(id = "id", tenant_column = "...")` | Joined inheritance: this type's table is joined to the base table on these columns. `tenant_column` names the derived table's tenant column, and is required when the type has a tenant |
 /// | `has_stream(column = "...", content_type = "...", content_type_column = "...")` | A media entity whose stream is in `column` |
 /// | `track_changes` | Records changes in the change log, so reads can offer delta links |
+/// | `rename_all = "..."` | How fields without `name` are named: `"PascalCase"` (`first_name` is `FirstName`, the default), `"camelCase"` (`firstName`) or `"snake_case"` (`first_name`). Applies to properties and navigation properties of this type only, not to derived types, and not to type or set names |
 /// | `query_extension` | Every read is filtered by a registered `QueryExtension` |
 /// | `visible_for("group", ...)` | Only callers in one of the groups see the type |
 /// | `annotation(term = "...", string \| bool \| int \| enum_member \| path = ...)` | Adds an annotation |
@@ -109,7 +111,7 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
 ///
 /// Fields take the field attributes of [`ODataEntity`] that apply to structural properties:
 /// `name`, `column`, the facets, `embedded`, `computed`, `searchable` and `annotation`. The type
-/// itself takes `name = "..."`.
+/// itself takes `name = "..."` and `rename_all = "..."`.
 ///
 /// ```ignore
 /// #[derive(ODataComplex)]

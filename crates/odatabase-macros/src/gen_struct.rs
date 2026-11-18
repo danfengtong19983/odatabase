@@ -1,6 +1,7 @@
-use crate::attrs::{FieldAttrs, NavKind, TypeAttrs, pairs_tokens};
+use crate::attrs::{FieldAttrs, NavKind, RenameRule, TypeAttrs, pairs_tokens};
 use proc_macro2::TokenStream;
 use quote::quote;
+use syn::ext::IdentExt;
 use syn::{Data, DeriveInput, Error, Field, Fields, Result, Type};
 
 fn named_fields(input: &DeriveInput) -> Result<Vec<&Field>> {
@@ -17,10 +18,22 @@ fn is_vec(ty: &Type) -> bool {
     matches!(ty, Type::Path(p) if p.path.segments.last().is_some_and(|s| s.ident == "Vec"))
 }
 
+/// The property name of a field: its `name`, or its Rust name under the type's `rename_all`.
+fn edm_name(rust: &str, f: &FieldAttrs, rule: RenameRule) -> TokenStream {
+    if let Some(n) = &f.name {
+        return quote!(#n.to_owned());
+    }
+    match rule {
+        RenameRule::Pascal => quote!(::odatabase::edm::edm_case(#rust)),
+        RenameRule::Camel => quote!(::odatabase::edm::camel_case(#rust)),
+        RenameRule::Snake => quote!(#rust.to_owned()),
+    }
+}
+
 /// Emits a `Property` construction, leaving it in `p`.
-fn property(field: &Field, f: &FieldAttrs) -> Result<TokenStream> {
+fn property(field: &Field, f: &FieldAttrs, rule: RenameRule) -> Result<TokenStream> {
     let ident = field.ident.as_ref().expect("named field");
-    let rust = ident.to_string();
+    let rust = ident.unraw().to_string();
     let ty = &field.ty;
     if is_vec(ty) && f.collection.is_none() {
         return Err(Error::new_spanned(
@@ -28,10 +41,7 @@ fn property(field: &Field, f: &FieldAttrs) -> Result<TokenStream> {
             "a Vec field needs #[odata(collection(...))]",
         ));
     }
-    let name = match &f.name {
-        Some(n) => quote!(#n.to_owned()),
-        None => quote!(::odatabase::edm::edm_case(#rust)),
-    };
+    let name = edm_name(&rust, f, rule);
     let column = if f.embedded {
         f.prefix.clone().unwrap_or_default()
     } else {
@@ -129,7 +139,7 @@ pub fn complex(input: &DeriveInput) -> Result<TokenStream> {
         if f.key || f.etag || f.nav.is_some() {
             return Err(Error::new_spanned(field, "not allowed on a complex type"));
         }
-        let build = property(field, &f)?;
+        let build = property(field, &f, attrs.rename_all)?;
         props.push(quote!({ #build t.properties.push(p); }));
     }
     Ok(quote! {
@@ -169,11 +179,8 @@ pub fn entity(input: &DeriveInput) -> Result<TokenStream> {
             continue;
         }
         let ident = field.ident.as_ref().expect("named field");
-        let rust = ident.to_string();
-        let name = match &f.name {
-            Some(n) => quote!(#n.to_owned()),
-            None => quote!(::odatabase::edm::edm_case(#rust)),
-        };
+        let rust = ident.unraw().to_string();
+        let name = edm_name(&rust, &f, attrs.rename_all);
         if let Some(claim) = &f.tenant {
             if f.key {
                 return Err(Error::new_spanned(
@@ -246,7 +253,7 @@ pub fn entity(input: &DeriveInput) -> Result<TokenStream> {
         if f.etag {
             etag = quote!(Some(#name));
         }
-        let build = property(field, &f)?;
+        let build = property(field, &f, attrs.rename_all)?;
         body.push(quote!({ #build t.properties.push(p); }));
     }
 
