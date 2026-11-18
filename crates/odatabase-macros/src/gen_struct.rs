@@ -129,6 +129,12 @@ pub fn complex(input: &DeriveInput) -> Result<TokenStream> {
     let attrs = TypeAttrs::parse(&input.attrs)?;
     let stem = ident.to_string();
     let type_name = attrs.name.clone().unwrap_or_else(|| stem.clone());
+    if attrs.open.is_some() {
+        return Err(Error::new_spanned(
+            ident,
+            "open_type is for entity types: a complex type cannot hold dynamic properties",
+        ));
+    }
     let annotations = &attrs.annotations;
     let mut props = Vec::new();
     for field in named_fields(input)? {
@@ -315,6 +321,10 @@ pub fn entity(input: &DeriveInput) -> Result<TokenStream> {
     let track_changes = attrs.track_changes;
     let annotations = &attrs.annotations;
     let query_extension = attrs.query_extension;
+    let open = match &attrs.open {
+        Some(column) => quote!(Some(#column.to_owned())),
+        None => quote!(None),
+    };
     let contained = attrs.no_set || attrs.singleton.is_some() || is_abstract || has_base;
     let set = if contained && attrs.set.is_none() {
         quote!()
@@ -363,6 +373,7 @@ pub fn entity(input: &DeriveInput) -> Result<TokenStream> {
                     annotations: vec![#(#annotations),*],
                     query_extension: #query_extension,
                     track_changes: #track_changes,
+                    open: #open,
                     ..Default::default()
                 };
                 #(#body)*

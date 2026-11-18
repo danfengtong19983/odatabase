@@ -3,9 +3,9 @@
 use crate::UriError;
 use crate::apply::parse_apply;
 use crate::ast::*;
-use crate::expr::{Aliases, Scope, parse_expression, property_type};
+use crate::expr::{Aliases, Scope, parse_expression, property_type, settle};
 use crate::path::Limits;
-use odatabase_edm::Model;
+use odatabase_edm::{Model, PrimitiveKind};
 
 /// Everything needed to parse options at one level of a request.
 pub struct OptionContext<'a> {
@@ -46,6 +46,7 @@ pub fn apply_option(
     match name {
         "$filter" => {
             let e = parse_expression(ctx.model, value, scope.clone(), ctx.aliases, max)?;
+            let e = settle(e, PrimitiveKind::Boolean)?;
             if !e.ty().is_boolean() {
                 return Err(UriError::bad_request(
                     "$filter must be a boolean expression",
@@ -131,7 +132,8 @@ pub fn orderby(
         let max = ctx.limits;
         let expr = parse_expression(ctx.model, text, scope.clone(), ctx.aliases, max)?;
         match expr.ty() {
-            ExprType::Primitive(_) | ExprType::Enum(_) | ExprType::Null => {}
+            // Dynamic properties sort by their JSON values.
+            ExprType::Primitive(_) | ExprType::Enum(_) | ExprType::Null | ExprType::Untyped => {}
             other => {
                 return Err(UriError::bad_request(format!("cannot order by {other:?}")));
             }
@@ -321,6 +323,14 @@ fn validate_select_path(
                     return Ok(());
                 } else if ctx.model.entity_type(step).is_some() {
                     ExprType::Entity(ctx.model.local(step).to_owned())
+                } else if ctx.model.open_column(t).is_some() && !step.contains('.') {
+                    // A dynamic property is selected whole, present or not.
+                    if !steps.last().is_some_and(|last| std::ptr::eq(last, step)) {
+                        return Err(UriError::bad_request(format!(
+                            "{step} is a dynamic property: select it whole"
+                        )));
+                    }
+                    return Ok(());
                 } else {
                     return Err(unknown(step));
                 }

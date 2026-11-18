@@ -286,6 +286,11 @@ impl Service {
                 }
             }
         }
+        if let Some(column) = model.open_column(concrete)
+            && (put || !payload.dynamic.is_empty())
+        {
+            writes.push(&l.root, dynamic_write(column, payload, put));
+        }
         for (nav_name, urls) in &payload.binds {
             let nav = model
                 .navigation(concrete, nav_name)

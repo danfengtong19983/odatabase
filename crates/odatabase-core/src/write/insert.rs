@@ -212,6 +212,9 @@ impl Service {
                     }
                 }
             }
+            if let Some(column) = model.open_column(type_name) {
+                writes.push(&l.root, dynamic_write(column, payload, true));
+            }
             // Links whose foreign key is on this row must resolve before the insert.
             for (nav_name, urls) in &payload.binds {
                 let nav = model

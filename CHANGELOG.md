@@ -5,6 +5,14 @@ before 1.0, a minor version may break the API, and its entry says how to migrate
 
 ## Unreleased
 
+- **Open types.** `#[odata(open_type(column = "..."))]` keeps an entity type's dynamic
+  properties as the members of a JSON object in one column (`jsonb`, `json` or text on Postgres,
+  text on SQLite). They are read, selected, filtered, sorted and written like declared
+  properties, including members of nested objects in `$filter`. See "Open types" in the README.
+- **Breaking:** `EntityType` has a new `open` field, `EntityPayload` a new `dynamic` field and
+  `sql::ColumnWrite` a new `json` field, with `ColumnWrite::json` and `sql::JsonWrite` to fill
+  it. Code that builds these with struct literals needs the new field.
+
 - **`rename_all`.** `#[odata(rename_all = "snake_case")]`, `"camelCase"` or `"PascalCase"` on an
   entity or complex type names the properties and navigation properties of its fields without a
   `name`. The default stays `PascalCase`.

@@ -66,7 +66,7 @@ that way.
 | Area | Supported |
 |---|---|
 | Metadata | CSDL XML and JSON, service document, `$metadata` ETag, annotations and vocabularies |
-| Model | Complex types, enums and flags, collection properties, singletons, single-table and joined inheritance, media streams, geospatial properties (stored as GeoJSON) |
+| Model | Complex types, enums and flags, collection properties, singletons, single-table and joined inheritance, media streams, geospatial properties (stored as GeoJSON), open types with dynamic properties in a JSON column |
 | Mapped properties | Language-dependent descriptions, transient properties with calculators |
 | Reads | Key and navigation paths, `$filter` with lambdas and built-in functions, `$select`, `$orderby`, `$top`, `$skip`, `$count`, `$search`, `$compute`, `$schemaversion`, `$ref`, `$value`, `$entity`, `$all`, `$crossjoin`, casts, date and duration arithmetic, the same options on collection properties and inside `$select` |
 | `$apply` | `aggregate`, `groupby` (with `rollup` and `$all`), `filter`, `search`, `compute`, `orderby`, `top`, `skip`, `identity`, `concat`, `join`, `outerjoin`, `expand`, and the `topcount`, `topsum`, `toppercent` family with its `bottom` forms, in pipelines, with `sum`, `min`, `max`, `average`, `countdistinct` and `$count` |
@@ -187,6 +187,52 @@ trip or two per request and runs a request's concurrent `$expand` queries one at
 policy refuses answers 403. On SQLite the settings are ignored. The application role also needs
 access to `odata_changes` if it tracks changes.
 
+### Open types
+
+An open type keeps properties it doesn't declare, its dynamic properties, as the members of one
+JSON object in a column of its table:
+
+```rust
+#[derive(ODataEntity)]
+#[odata(table = "business_object", open_type(column = "payload"))]
+struct BusinessObject {
+    #[odata(key)]
+    id: Uuid,
+    title: String,
+}
+```
+
+`$metadata` marks the type `OpenType="true"`, and the members appear next to the declared
+properties: `{"Id": "...", "Title": "Warranty card", "serial_no": "SN-1", "site": {"city": "Paris"}}`.
+They are addressed like declared properties:
+
+```bash
+curl -G 'http://127.0.0.1:3000/odata/BusinessObjects' \
+  --data-urlencode "\$filter=serial_no eq 'SN-1' and site/city eq 'Paris'" \
+  --data-urlencode '$select=Title,serial_no' --data-urlencode '$orderby=serial_no'
+```
+
+- **Storage.** `jsonb`, `json` or text on Postgres, text on SQLite. The column isn't a property.
+  A row whose column is null has no dynamic properties.
+- **Expressions.** A dynamic property is read as the type its context needs: a string, a number
+  or a boolean, as in `qty gt 2`, `contains(serial_no,'SN')`, `active` or
+  `cast(qty,Edm.Int32)`. A value of another JSON type, or a missing member, reads as null, so
+  `qty gt 2` skips a row whose `qty` is `"many"` instead of failing. Dates in JSON are strings, so
+  compare them with string literals. `$orderby` sorts by the JSON values, and
+  `site/city` reaches into a nested object.
+- **Writes.** POST stores the members given; null ones are left out. PATCH sets the members it
+  names and removes those it sets to null, replacing an object or array member whole. PUT
+  replaces them all. A dynamic property's name must be an identifier, so `$filter` can name it.
+  Change handlers see them in `EntityPayload::dynamic` and may change them.
+- **Names.** A member named like a declared property or navigation property is ignored on read:
+  the declared one wins.
+- **Limits.** `$select` takes a dynamic property whole. `groupby` and `compute` in `$apply`
+  can't use one, though `aggregate(cast(qty,Edm.Decimal) with sum as total)` can, and a resource path can't address one (`Things(1)/serial_no` answers 404).
+  Filters read the JSON of every row they test: promote a member you filter large tables on to
+  a column. With `odata.metadata=full`, dynamic properties carry no `@odata.type`. Declare
+  `open_type` on the root of a hierarchy; derived types are open with it. Complex types can't be
+  open.
+
 ### Change tracking
 
 Mark an entity with `#[odata(track_changes)]` and create the log once at startup:
@@ -264,6 +310,7 @@ These return a status rather than a wrong result:
 | `$filter` and `$orderby` on values a handler returned, as opposed to entities | 501 |
 | `geo.*` and `hassubset` in `$filter` | 501 |
 | Navigation properties inside complex types | 501 |
+| `groupby` on a dynamic property | 501 |
 | Entity-typed operation parameters | 501 |
 | Query options on the result of a handler-based operation, other than `$select` and `$expand` | 501 |
 | Data formats other than JSON | 406 |

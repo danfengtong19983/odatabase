@@ -276,6 +276,26 @@ fn validate(m: &Model) -> Result<(), ModelError> {
         {
             return bail(format!("{}: inheritance cycle", t.name));
         }
+        if let Some(column) = &t.open {
+            if t.base_type.is_some() {
+                return bail(format!(
+                    "{}: declare open_type on the root type; derived types are open with it",
+                    t.name
+                ));
+            }
+            if column.is_empty() {
+                return bail(format!("{}: open_type needs a column", t.name));
+            }
+            if m.all_properties(&t.name)
+                .iter()
+                .any(|p| p.column == *column && p.collection.is_none())
+            {
+                return bail(format!(
+                    "{}: column {column} holds dynamic properties and cannot also be a property",
+                    t.name
+                ));
+            }
+        }
         let key = m.key_of(&t.name);
         if key.is_empty() && !t.is_abstract {
             return bail(format!("{}: entity type has no key", t.name));

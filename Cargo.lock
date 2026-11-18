@@ -1548,6 +1548,7 @@ dependencies = [
  "rust_decimal",
  "sea-query",
  "sea-query-sqlx",
+ "serde_json",
  "sqlx",
  "thiserror",
  "tokio",

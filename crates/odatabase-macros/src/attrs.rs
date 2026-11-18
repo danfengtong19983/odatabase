@@ -104,6 +104,7 @@ pub struct TypeAttrs {
     pub query_extension: bool,
     pub track_changes: bool,
     pub rename_all: RenameRule,
+    pub open: Option<String>,
 }
 
 /// How a field's Rust name becomes its property name, unless the field sets `name`.
@@ -152,6 +153,17 @@ impl TypeAttrs {
                     t.singleton = Some(string(&m)?);
                 } else if m.path.is_ident("track_changes") {
                     t.track_changes = true;
+                } else if m.path.is_ident("open_type") {
+                    let mut column = None;
+                    m.parse_nested_meta(|d| {
+                        if d.path.is_ident("column") {
+                            column = Some(string(&d)?);
+                            Ok(())
+                        } else {
+                            Err(d.error("expected column"))
+                        }
+                    })?;
+                    t.open = Some(column.ok_or_else(|| m.error("open_type needs a column"))?);
                 } else if m.path.is_ident("rename_all") {
                     t.rename_all = RenameRule::parse(&m)?;
                 } else if m.path.is_ident("abstract_type") {
