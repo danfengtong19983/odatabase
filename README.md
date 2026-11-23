@@ -121,7 +121,13 @@ authentication.
   rows lose only the link. Navigations the body doesn't mention are left alone. Use
   `Nav@odata.bind` to add links without replacing anything.
 - **API versions** are separate `Service` values mounted at different paths.
-- **Errors.** Database errors reach clients as generic messages. Causes are logged with `tracing`.
+- **Errors.** Database errors reach clients as generic messages: 409 for a unique, primary key,
+  foreign key or exclusion violation, 400 for a check or not-null one. Causes are logged with
+  `tracing`. To answer a constraint with your own message and code, register it:
+  `.constraint_error("todos_open_entity_assignee_uk", ODataError::new(409, "...").with_code("open_todo_exists"))`.
+  That needs a database that names the failing constraint, which Postgres does and SQLite
+  doesn't. `ODataError::with_code` sets the `code` of any error body, which is otherwise the
+  status.
 
 ### SQLite differences
 

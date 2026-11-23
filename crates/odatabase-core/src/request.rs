@@ -89,6 +89,11 @@ pub struct ODataError {
     pub status: u16,
     /// The message for the client.
     pub message: String,
+    /// The `code` of the error body. Without one, the body's code is the status.
+    pub code: Option<String>,
+    /// The database constraint that refused the change, when the database names one. Never
+    /// shown to clients; [`crate::ServiceBuilder::constraint_error`] maps it to an error.
+    pub constraint: Option<String>,
 }
 
 impl ODataError {
@@ -97,7 +102,16 @@ impl ODataError {
         Self {
             status,
             message: message.into(),
+            code: None,
+            constraint: None,
         }
+    }
+
+    /// The same error with `code` in its body, such as an application's error type.
+    #[must_use]
+    pub fn with_code(mut self, code: impl Into<String>) -> Self {
+        self.code = Some(code.into());
+        self
     }
 
     /// A 400 error.
@@ -118,7 +132,8 @@ impl ODataError {
     /// The error as an OData JSON error response.
     pub fn to_response(&self) -> ODataResponse {
         let status = StatusCode::from_u16(self.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        let body = json!({"error": {"code": self.status.to_string(), "message": self.message}});
+        let code = self.code.clone().unwrap_or_else(|| self.status.to_string());
+        let body = json!({"error": {"code": code, "message": self.message}});
         ODataResponse::json(status, HeaderValue::from_static("application/json"), &body)
     }
 }
@@ -136,6 +151,8 @@ impl From<QueryError> for ODataError {
         if status >= 500 {
             tracing::error!(error = %e, "request failed");
         }
-        Self::new(status, message)
+        let mut error = Self::new(status, message);
+        error.constraint = e.constraint().map(str::to_owned);
+        error
     }
 }
