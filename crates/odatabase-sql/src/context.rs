@@ -109,6 +109,34 @@ impl TableRef {
 pub trait QueryExtension: Send + Sync {
     /// The condition rows must meet for this caller, or `None` for no restriction.
     fn condition(&self, table: &TableRef, claims: &Claims) -> Result<Option<Expr>, QueryError>;
+
+    /// Whether types using this extension may be declared with `track_changes`. Off by
+    /// default, because a delta response must then decide what to say about rows the
+    /// extension hides: see [`QueryExtension::hidden_changes`].
+    fn tracks_changes(&self) -> bool {
+        false
+    }
+
+    /// What a delta response tells this caller about a changed row that `condition` hides from
+    /// them, or that was deleted. Rows the caller can still read but that left the client's
+    /// `$filter` are always reported as removed.
+    fn hidden_changes(&self, claims: &Claims) -> HiddenChanges {
+        let _ = claims;
+        HiddenChanges::Silent
+    }
+}
+
+/// How change tracking treats rows a [`QueryExtension`] hides from the caller.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HiddenChanges {
+    /// Leaves them out of delta responses, so no key of a hidden row is revealed. A client keeps
+    /// its copy of a row that leaves its view this way, or that is deleted, so prefer it where
+    /// rows leave by soft deletion visible to the caller, or never leave.
+    #[default]
+    Silent,
+    /// Reports them as removed, which reveals their keys (not their content) to a caller who
+    /// may never have seen them. Choose it where keys aren't secret from this caller.
+    Removed,
 }
 
 /// The inputs of query translation that stay fixed during a request.

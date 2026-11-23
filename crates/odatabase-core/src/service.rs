@@ -463,11 +463,25 @@ impl ServiceBuilder {
                         t.name
                     )));
                 }
-                if crate::write::row_restricted(&model, &t.name) {
+                if crate::write::row_protected(&model, &t.name) {
                     return Err(ModelError(format!(
                         "{}: rows hidden from some callers cannot be tracked",
                         t.name
                     )));
+                }
+                for base in model.type_chain(&t.name) {
+                    let untracked = base.query_extension
+                        && self
+                            .extensions
+                            .get(&base.name)
+                            .is_some_and(|e| !e.tracks_changes());
+                    if untracked {
+                        return Err(ModelError(format!(
+                            "{}: its query extension doesn't allow tracking changes \
+                             (QueryExtension::tracks_changes)",
+                            t.name
+                        )));
+                    }
                 }
             }
             if t.query_extension && !self.extensions.contains_key(&t.name) {

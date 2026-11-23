@@ -13,6 +13,13 @@ before 1.0, a minor version may break the API, and its entry says how to migrate
   `sql::ColumnWrite` a new `json` field, with `ColumnWrite::json` and `sql::JsonWrite` to fill
   it. Code that builds these with struct literals needs the new field.
 
+- **Change tracking with query extensions.** A type with a query extension can be tracked once
+  the extension returns true from the new `QueryExtension::tracks_changes`. Its
+  `hidden_changes` chooses, per caller, whether changes to rows it hides are left out of delta
+  responses (`HiddenChanges::Silent`, the default, which reveals no keys) or reported as removed
+  (`HiddenChanges::Removed`). Both new methods have defaults, so existing extensions compile and
+  stay untracked.
+
 - **Constraint errors.** `ServiceBuilder::constraint_error(name, error)` answers a violation of
   the named database constraint with `error` instead of the generic message, in requests and in
   `$batch` change sets. Postgres names the constraint; SQLite doesn't, so there the generic

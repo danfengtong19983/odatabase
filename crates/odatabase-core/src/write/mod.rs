@@ -536,7 +536,16 @@ pub(crate) fn row_restricted(model: &Model, type_name: &str) -> bool {
     model
         .type_chain(type_name)
         .iter()
-        .any(|t| t.query_extension || t.properties.iter().any(|p| has_protection(model, p)))
+        .any(|t| t.query_extension)
+        || row_protected(model, type_name)
+}
+
+/// Whether a property of the type protects rows by a claim.
+pub(crate) fn row_protected(model: &Model, type_name: &str) -> bool {
+    model
+        .type_chain(type_name)
+        .iter()
+        .any(|t| t.properties.iter().any(|p| has_protection(model, p)))
 }
 
 /// Rejects writes to properties and types hidden from the caller.
