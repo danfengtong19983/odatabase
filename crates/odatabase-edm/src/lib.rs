@@ -18,4 +18,4 @@ pub use builder::{
 pub use csdl_json::to_csdl_json;
 pub use csdl_xml::to_csdl_xml;
 pub use model::*;
-pub use value::{PrimitiveKind, Value, ValueError, parse_duration};
+pub use value::{PrimitiveKind, Value, ValueError, json_text, parse_duration};

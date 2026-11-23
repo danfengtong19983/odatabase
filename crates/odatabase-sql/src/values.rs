@@ -22,6 +22,8 @@ pub fn to_sea(model: &Model, dialect: Dialect, value: &Value) -> Result<Sea, Que
         Value::Decimal(v) if sqlite => Sea::Double(v.to_string().parse().ok()),
         Value::Decimal(v) => Sea::Decimal(Some(*v)),
         Value::String(v) | Value::Geo(v) => Sea::String(Some(v.clone())),
+        // Written through `CAST(... AS jsonb)` or `json(...)`; see `write::assigned`.
+        Value::Json(v) => Sea::String(Some(v.to_string())),
         Value::Date(_) | Value::TimeOfDay(_) if sqlite => Sea::String(Some(value.to_text())),
         Value::Date(v) => Sea::ChronoDate(Some(*v)),
         Value::TimeOfDay(v) => Sea::ChronoTime(Some(*v)),

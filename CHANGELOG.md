@@ -13,6 +13,13 @@ before 1.0, a minor version may break the API, and its entry says how to migrate
   `sql::ColumnWrite` a new `json` field, with `ColumnWrite::json` and `sql::JsonWrite` to fill
   it. Code that builds these with struct literals needs the new field.
 
+- **JSON properties.** A `serde_json::Value` field is an `Edm.Untyped` property: any JSON
+  value, stored whole in a `jsonb`, `json` or text column on Postgres and text on SQLite. It can
+  be selected and checked against null, not compared or sorted. See "JSON properties" in the
+  README. Postgres reads `json` and `jsonb` columns as text wherever they appear.
+- **Breaking:** `PrimitiveKind` has a new `Untyped` variant and `Value` a new `Json` variant.
+  Exhaustive matches on them need an arm.
+
 - **`rename_all`.** `#[odata(rename_all = "snake_case")]`, `"camelCase"` or `"PascalCase"` on an
   entity or complex type names the properties and navigation properties of its fields without a
   `name`. The default stays `PascalCase`.

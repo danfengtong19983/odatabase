@@ -422,6 +422,7 @@ fn read_primitive(kind: PrimitiveKind, json: &Json) -> Result<Value, String> {
             Value::parse_text(kind, &url_safe).map_err(|_| bad())
         }
         (k, Json::Object(_)) if k.is_geo() => Ok(Value::Geo(json.to_string())),
+        (P::Untyped, _) => Ok(Value::Json(json.clone())),
         (k, Json::String(s)) if !k.is_numeric() && k != P::Boolean => {
             Value::parse_text(k, s).map_err(|_| bad())
         }

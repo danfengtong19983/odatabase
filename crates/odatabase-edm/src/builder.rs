@@ -79,6 +79,7 @@ edm_field! {
     GeometryPoint => GeometryPoint,
     GeometryLineString => GeometryLineString,
     GeometryPolygon => GeometryPolygon,
+    serde_json::Value => Untyped,
 }
 
 /// `Edm.Binary` field. A plain `Vec<u8>` would read as a collection of bytes.
@@ -316,6 +317,12 @@ fn validate(m: &Model) -> Result<(), ModelError> {
             if p.collection.is_some() || matches!(p.kind, TypeKind::Complex(_)) {
                 return bail(format!("{}: key property {k} must be a scalar", t.name));
             }
+            if p.kind == TypeKind::Primitive(PrimitiveKind::Untyped) {
+                return bail(format!(
+                    "{}: key property {k} cannot be Edm.Untyped",
+                    t.name
+                ));
+            }
         }
         if let Some(e) = &t.etag
             && !t.properties.iter().any(|p| &p.name == e)
@@ -501,6 +508,15 @@ mod tests {
         t.properties[0].nullable = true;
         b.add_entity_type(t);
         assert!(b.build().unwrap_err().0.contains("must not be nullable"));
+    }
+
+    #[test]
+    fn untyped_key_is_rejected() {
+        let mut b = ModelBuilder::new("T");
+        let mut t = entity("A");
+        t.properties[0].kind = TypeKind::Primitive(PrimitiveKind::Untyped);
+        b.add_entity_type(t);
+        assert!(b.build().unwrap_err().0.contains("cannot be Edm.Untyped"));
     }
 
     #[test]

@@ -66,7 +66,7 @@ that way.
 | Area | Supported |
 |---|---|
 | Metadata | CSDL XML and JSON, service document, `$metadata` ETag, annotations and vocabularies |
-| Model | Complex types, enums and flags, collection properties, singletons, single-table and joined inheritance, media streams, geospatial properties (stored as GeoJSON), open types with dynamic properties in a JSON column |
+| Model | Complex types, enums and flags, collection properties, singletons, single-table and joined inheritance, media streams, geospatial properties (stored as GeoJSON), open types with dynamic properties in a JSON column, `Edm.Untyped` JSON properties |
 | Mapped properties | Language-dependent descriptions, transient properties with calculators |
 | Reads | Key and navigation paths, `$filter` with lambdas and built-in functions, `$select`, `$orderby`, `$top`, `$skip`, `$count`, `$search`, `$compute`, `$schemaversion`, `$ref`, `$value`, `$entity`, `$all`, `$crossjoin`, casts, date and duration arithmetic, the same options on collection properties and inside `$select` |
 | `$apply` | `aggregate`, `groupby` (with `rollup` and `$all`), `filter`, `search`, `compute`, `orderby`, `top`, `skip`, `identity`, `concat`, `join`, `outerjoin`, `expand`, and the `topcount`, `topsum`, `toppercent` family with its `bottom` forms, in pipelines, with `sum`, `min`, `max`, `average`, `countdistinct` and `$count` |
@@ -232,6 +232,32 @@ curl -G 'http://127.0.0.1:3000/odata/BusinessObjects' \
   a column. With `odata.metadata=full`, dynamic properties carry no `@odata.type`. Declare
   `open_type` on the root of a hierarchy; derived types are open with it. Complex types can't be
   open.
+
+### JSON properties
+
+A `serde_json::Value` field is an `Edm.Untyped` property (OData 4.01): any JSON value, read
+and written whole. Use it for JSON that isn't a set of fields, such as a document, an array or
+bookkeeping you don't want mixed into an open type's dynamic properties:
+
+```rust
+#[derive(ODataEntity)]
+#[odata(table = "object_type", open_type(column = "custom_fields"))]
+struct ObjectType {
+    #[odata(key)]
+    id: Uuid,
+    json_schema: serde_json::Value,           // {"type": "object", ...}
+    allowed_roles: Option<serde_json::Value>, // ["finance", "hr"]
+    metadata: serde_json::Value,
+}
+```
+
+- **Storage.** `jsonb`, `json` or text on Postgres, text on SQLite. Text that isn't JSON reads as
+  a JSON string.
+- **Writes.** POST, PATCH and PUT store the value given, replacing the stored one whole; a JSON
+  `null` clears a nullable property.
+- **Queries.** `$select` and `eq null`/`ne null` work. Other comparisons, `$orderby` and
+  `groupby` are refused with 400, because an untyped value has no type to compare or order by.
+  An `Edm.Untyped` property can't be a key.
 
 ### Change tracking
 

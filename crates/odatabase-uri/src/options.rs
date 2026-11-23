@@ -132,6 +132,11 @@ pub fn orderby(
         let max = ctx.limits;
         let expr = parse_expression(ctx.model, text, scope.clone(), ctx.aliases, max)?;
         match expr.ty() {
+            ExprType::Primitive(PrimitiveKind::Untyped) => {
+                return Err(UriError::bad_request(
+                    "cannot order by an Edm.Untyped value: it has no order",
+                ));
+            }
             // Dynamic properties sort by their JSON values.
             ExprType::Primitive(_) | ExprType::Enum(_) | ExprType::Null | ExprType::Untyped => {}
             other => {
