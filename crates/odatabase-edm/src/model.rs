@@ -148,6 +148,14 @@ impl Model {
         })
     }
 
+    /// The JSON column holding the dynamic properties of `type_name`, if it or a base type is
+    /// open.
+    pub fn open_column(&self, type_name: &str) -> Option<&str> {
+        self.type_chain(type_name)
+            .into_iter()
+            .find_map(|t| t.open.as_deref())
+    }
+
     /// Derived types of `name`, transitively.
     pub fn derived_types(&self, name: &str) -> Vec<&EntityType> {
         let mut out = Vec::new();
@@ -193,6 +201,8 @@ pub struct EntityType {
     pub track_changes: bool,
     /// The column that says which tenant a row belongs to.
     pub tenant: Option<TenantColumn>,
+    /// For an open type, the JSON column holding its dynamic properties as one object.
+    pub open: Option<String>,
 }
 
 /// The tenant of a row. It is no property: clients can neither see nor name it, and every

@@ -9,7 +9,7 @@ use crate::expand::{ExpandLimits, expand_records};
 use crate::filter::{Frame, FrameKind, Translator, and_all, col};
 use crate::record::{Node, Record};
 use crate::search::search_condition;
-use crate::{QueryContext, QueryError, Session};
+use crate::{Dialect, QueryContext, QueryError, Session};
 use odatabase_edm::{Inheritance, Model, PrimitiveKind, Property, TypeKind, Value};
 use odatabase_uri::{
     ComputeItem, Expr as UExpr, OrderItem, QueryOptions, Segment, SelectItem, Step, Transformation,
@@ -106,7 +106,13 @@ pub struct Layout {
     pub concrete: Vec<(String, String, String)>,
     /// Hidden flags showing that the row of a `Joined` derived table exists.
     pub present: Vec<(String, String)>,
+    /// The dynamic properties read from an open type's JSON column: `None` for all of them,
+    /// or the selected names.
+    pub dynamic: Option<Option<BTreeSet<String>>>,
 }
+
+/// Name in `Record::hidden` of an open type's JSON column.
+const DYNAMIC: &str = "open:";
 
 /// Adds the `SELECT` list for an entity and records how to read it back.
 pub struct EntitySelect<'t, 'a> {
@@ -332,6 +338,42 @@ pub fn select_entity(
         layout: Layout::default(),
     };
     es.properties(frame, &props, &selection, &[], None)?;
+    if let Some(column) = model.open_column(type_name) {
+        let wanted = match &selection {
+            Selection::All => Some(None),
+            Selection::Some(tree) => {
+                let names: BTreeSet<String> = tree
+                    .keys()
+                    .filter(|n| {
+                        model.property(type_name, n).is_none()
+                            && model.navigation(type_name, n).is_none()
+                    })
+                    .cloned()
+                    .collect();
+                (!names.is_empty()).then_some(Some(names))
+            }
+        };
+        if let Some(wanted) = wanted {
+            let bag = col(&frame.alias, column);
+            // As text, which every dialect decodes; the JSON is parsed when records are built.
+            let bag = match es.tr.ctx.dialect {
+                Dialect::Postgres => {
+                    crate::filter::tpl(Dialect::Postgres, "CAST($1 AS text)", [bag])
+                }
+                Dialect::Sqlite => bag,
+            };
+            es.add(
+                bag,
+                Column {
+                    path: Vec::new(),
+                    decode: ColumnDecode::Primitive(odatabase_edm::PrimitiveKind::String),
+                    only_for: None,
+                    hidden: Some(DYNAMIC.to_owned()),
+                },
+            );
+            es.layout.dynamic = Some(wanted);
+        }
+    }
     let base_props: BTreeSet<&str> = props.iter().map(|p| p.name.as_str()).collect();
     let mut concrete = Vec::new();
     let mut present = Vec::new();
@@ -436,11 +478,61 @@ pub fn to_records(
                 }
                 rec.set_path(&c.path, v);
             }
+            if let Some(wanted) = &layout.dynamic
+                && let Some(Value::String(text)) = hidden.remove(DYNAMIC)
+            {
+                add_dynamic(model, &mut rec, &text, wanted.as_ref());
+            }
             rec.hidden = hidden;
             rec.collapse_empty_complex();
             rec
         })
         .collect()
+}
+
+/// Adds the members of an open type's JSON object to `rec` as properties, after the declared
+/// ones. A member named like a declared property or navigation is left out: the declared one
+/// wins. Text that is no JSON object adds nothing.
+fn add_dynamic(model: &Model, rec: &mut Record, text: &str, wanted: Option<&BTreeSet<String>>) {
+    let Ok(serde_json::Value::Object(members)) = serde_json::from_str::<serde_json::Value>(text)
+    else {
+        return;
+    };
+    for (name, value) in members {
+        if wanted.is_some_and(|w| !w.contains(&name))
+            || model.property(&rec.type_name, &name).is_some()
+            || model.navigation(&rec.type_name, &name).is_some()
+        {
+            continue;
+        }
+        rec.fields.push((name, json_node(value)));
+    }
+}
+
+/// A JSON value as a record node: objects as complex values, arrays as collections.
+pub fn json_node(value: serde_json::Value) -> Node {
+    use serde_json::Value as J;
+    match value {
+        J::Null => Node::Value(Value::Null),
+        J::Bool(b) => Node::Value(Value::Boolean(b)),
+        J::Number(n) => Node::Value(if let Some(i) = n.as_i64() {
+            Value::Int64(i)
+        } else {
+            n.to_string()
+                .parse()
+                .map(Value::Decimal)
+                .unwrap_or_else(|_| Value::Double(n.as_f64().unwrap_or(f64::NAN)))
+        }),
+        J::String(s) => Node::Value(Value::String(s)),
+        J::Array(items) => Node::Collection(items.into_iter().map(json_node).collect()),
+        J::Object(members) => Node::Complex(Some(Record {
+            fields: members
+                .into_iter()
+                .map(|(k, v)| (k, json_node(v)))
+                .collect(),
+            ..Record::default()
+        })),
+    }
 }
 
 fn concrete_type(type_name: &str, layout: &Layout, hidden: &BTreeMap<String, Value>) -> String {

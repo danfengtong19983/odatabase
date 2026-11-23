@@ -15,9 +15,9 @@ use odatabase_edm::{
     EntityType, Inheritance, Model, NavigationProperty, PrimitiveKind, Property, TypeKind, Value,
 };
 use odatabase_sql::{
-    ChangeKind, Claims, ColumnValue, ColumnWrite, Page, ReadRequest, Session, collection_positions,
-    delete as sql_delete, insert as sql_insert, open_position, read_columns, read_entities,
-    update as sql_update,
+    ChangeKind, Claims, ColumnValue, ColumnWrite, JsonWrite, Page, ReadRequest, Session,
+    collection_positions, delete as sql_delete, insert as sql_insert, open_position, read_columns,
+    read_entities, update as sql_update,
 };
 use odatabase_uri::{ExpandItem, ODataUri, QueryOptions, Segment, Target};
 use serde_json::Value as Json;
@@ -159,6 +159,30 @@ fn flatten(
         }
     }
     Ok(())
+}
+
+/// The write of an open type's dynamic properties. `replace` stores exactly those given, as an
+/// insert or `PUT` does; otherwise they are merged into the stored ones, and a null removes
+/// one. A null is never stored: an absent dynamic property reads as null anyway.
+fn dynamic_write(column: &str, payload: &EntityPayload, replace: bool) -> ColumnWrite {
+    if replace {
+        let members = payload
+            .dynamic
+            .iter()
+            .filter(|(_, v)| !v.is_null())
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        return ColumnWrite::json(
+            column,
+            JsonWrite::Replace(serde_json::Value::Object(members)),
+        );
+    }
+    let set = payload
+        .dynamic
+        .iter()
+        .map(|(k, v)| (k.clone(), (!v.is_null()).then(|| v.clone())))
+        .collect();
+    ColumnWrite::json(column, JsonWrite::Merge(set))
 }
 
 /// Whether the source table of `nav` holds the foreign key.

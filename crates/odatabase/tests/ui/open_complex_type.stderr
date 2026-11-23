@@ -1,0 +1,5 @@
+error: open_type is for entity types: a complex type cannot hold dynamic properties
+ --> tests/ui/open_complex_type.rs:5:12
+  |
+5 | pub struct Address {
+  |            ^^^^^^^

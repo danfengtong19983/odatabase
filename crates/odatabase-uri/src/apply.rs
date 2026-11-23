@@ -2,7 +2,7 @@
 
 use crate::UriError;
 use crate::ast::*;
-use crate::expr::{Scope, parse_expression, property_type};
+use crate::expr::{Scope, parse_expression, property_type, settle};
 use crate::options::{OptionContext, number, orderby, search, split_top_level};
 use odatabase_edm::{Model, PrimitiveKind, TypeKind};
 use std::sync::Arc;
@@ -116,6 +116,7 @@ fn transformation(
     let step = match name {
         "filter" => {
             let e = parse_expression(ctx.model, args, current, ctx.aliases, max)?;
+            let e = settle(e, PrimitiveKind::Boolean)?;
             if !e.ty().is_boolean() {
                 return Err(UriError::bad_request("filter must be a boolean expression"));
             }
@@ -305,6 +306,9 @@ fn require_scalar(name: &str, ty: &ExprType) -> Result<(), UriError> {
     match ty {
         ExprType::Primitive(k) if !k.is_geo() => Ok(()),
         ExprType::Enum(_) => Ok(()),
+        ExprType::Untyped => Err(UriError::bad_request(format!(
+            "{name} is a dynamic property: give it a type with cast"
+        ))),
         _ => Err(UriError::bad_request(format!(
             "{name} must be a primitive value"
         ))),
@@ -526,6 +530,7 @@ fn expand_step(ctx: &OptionContext, owner: &str, args: &str) -> Result<ExpandIte
             .and_then(|p| p.strip_suffix(')'))
         {
             let e = parse_expression(ctx.model, text, scope.clone(), ctx.aliases, max)?;
+            let e = settle(e, PrimitiveKind::Boolean)?;
             if !e.ty().is_boolean() {
                 return Err(UriError::bad_request("filter must be a boolean expression"));
             }
@@ -597,6 +602,13 @@ fn group_keys(
         if !matches!(expr, Expr::Path(_) | Expr::Computed(..)) {
             return Err(UriError::bad_request(format!(
                 "{item} is not a property path"
+            )));
+        }
+        if let Expr::Path(p) = &expr
+            && p.steps.iter().any(|s| matches!(s, Step::Dynamic(_)))
+        {
+            return Err(UriError::not_implemented(format!(
+                "groupby on the dynamic property {item}"
             )));
         }
         let ty = expr.ty();

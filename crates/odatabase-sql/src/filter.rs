@@ -96,6 +96,8 @@ pub struct Translator<'a> {
     joins: Vec<(String, Frame)>,
     next_alias: u32,
     vars: Vec<(String, Frame)>,
+    /// The type the path being walked was given, which says how to read a dynamic property.
+    path_type: ExprType,
 }
 
 impl<'a> Translator<'a> {
@@ -107,6 +109,7 @@ impl<'a> Translator<'a> {
             joins: Vec::new(),
             next_alias: 0,
             vars: Vec::new(),
+            path_type: ExprType::Untyped,
         }
     }
 
@@ -575,6 +578,7 @@ impl<'a> Translator<'a> {
             current = self.left_join(sel, &current, nav)?;
             steps = rest;
         }
+        self.path_type = path.ty.clone();
         self.walk(&current, steps).map(Some)
     }
 
@@ -944,7 +948,89 @@ impl<'a> Translator<'a> {
 
     fn path(&mut self, it: &Frame, p: &Path) -> Result<Expr, QueryError> {
         let root = self.root_frame(it, &p.root)?;
+        self.path_type = p.ty.clone();
         self.walk(&root, &p.steps)
+    }
+
+    /// A dynamic property of an open type, read as `self.path_type`: a JSON value of another
+    /// type reads as null. Untyped, it is the JSON value itself, for ordering and comparing
+    /// two dynamic properties.
+    fn dynamic(&self, frame: &Frame, names: &[&str]) -> Result<Expr, QueryError> {
+        use PrimitiveKind as P;
+        let FrameKind::Entity(t) = &frame.kind else {
+            return Err(QueryError::internal("dynamic property outside an entity"));
+        };
+        let column = self
+            .ctx
+            .model
+            .open_column(t)
+            .ok_or_else(|| QueryError::internal(format!("{t} is not an open type")))?;
+        let bag = col(&frame.alias, column);
+        let kind = match &self.path_type {
+            ExprType::Untyped | ExprType::Null => None,
+            ExprType::Primitive(k) => Some(*k),
+            other => {
+                return Err(QueryError::internal(format!(
+                    "dynamic property read as {other:?}"
+                )));
+            }
+        };
+        if self.dialect() == Dialect::Postgres {
+            // The cast lets a json or text column hold the properties too; on jsonb it is free.
+            let mut template = "(CAST($1 AS jsonb)".to_owned();
+            let mut args = vec![bag];
+            for (i, name) in names.iter().enumerate() {
+                template.push_str(&format!(" -> ${}", i + 2));
+                args.push(Expr::val(*name));
+            }
+            template.push(')');
+            let value = tpl(self.dialect(), template, args);
+            let (json_type, sql_type) = match kind {
+                None => {
+                    return Ok(tpl(self.dialect(), "NULLIF($1, 'null'::jsonb)", [value]));
+                }
+                Some(P::String) => ("string", None),
+                Some(P::Boolean) => ("boolean", Some("boolean")),
+                Some(k) if k.is_numeric() => ("number", Some("numeric")),
+                Some(k) => {
+                    return Err(QueryError::internal(format!(
+                        "dynamic property read as {}",
+                        k.edm_name()
+                    )));
+                }
+            };
+            let text = "($1 #>> '{}')".to_owned();
+            let read = match sql_type {
+                Some(t) => format!("CAST({text} AS {t})"),
+                None => text,
+            };
+            return Ok(tpl(
+                self.dialect(),
+                format!("(CASE WHEN jsonb_typeof($1) = '{json_type}' THEN {read} END)"),
+                [value],
+            ));
+        }
+        let path: String = std::iter::once("$".to_owned())
+            .chain(names.iter().map(|n| format!(".\"{n}\"")))
+            .collect();
+        let args = [bag, Expr::val(path)];
+        let types = match kind {
+            None => return Ok(tpl(self.dialect(), "json_extract($1, $2)", args)),
+            Some(P::String) => "'text'",
+            Some(P::Boolean) => "'true', 'false'",
+            Some(k) if k.is_numeric() => "'integer', 'real'",
+            Some(k) => {
+                return Err(QueryError::internal(format!(
+                    "dynamic property read as {}",
+                    k.edm_name()
+                )));
+            }
+        };
+        Ok(tpl(
+            self.dialect(),
+            format!("(CASE WHEN json_type($1, $2) IN ({types}) THEN json_extract($1, $2) END)"),
+            args,
+        ))
     }
 
     fn lookup(&self, frame: &Frame, name: &str) -> Result<&'a Property, QueryError> {
@@ -1093,6 +1179,16 @@ impl<'a> Translator<'a> {
                 self.walk(&inner, rest)
             }
             Step::Count => Err(QueryError::bad_request("$count needs a collection")),
+            Step::Dynamic(name) => {
+                let mut names = vec![name.as_str()];
+                for s in rest {
+                    let Step::Dynamic(n) = s else {
+                        return Err(QueryError::internal("a dynamic path ends dynamic"));
+                    };
+                    names.push(n);
+                }
+                self.dynamic(frame, &names)
+            }
         }
     }
 
@@ -1206,6 +1302,9 @@ impl<'a> Translator<'a> {
                 self.lambda(it, &inner, rest, kind, var, body)
             }
             Step::Count => Err(QueryError::bad_request("$count cannot be followed")),
+            Step::Dynamic(name) => Err(QueryError::bad_request(format!(
+                "{name} is a dynamic property, not a collection"
+            ))),
         }
     }
 

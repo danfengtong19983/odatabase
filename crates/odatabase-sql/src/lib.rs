@@ -49,6 +49,6 @@ pub use record::{Node, Record, Refs};
 pub use sea_query;
 #[doc(hidden)]
 pub use values::{from_sea_string, to_sea};
-pub use write::{ColumnValue, ColumnWrite, delete, insert, update};
+pub use write::{ColumnValue, ColumnWrite, JsonWrite, delete, insert, update};
 #[doc(hidden)]
 pub use write::{collection_positions, lock_row, open_position, read_columns};
