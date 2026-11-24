@@ -5,6 +5,8 @@ before 1.0, a minor version may break the API, and its entry says how to migrate
 
 ## Unreleased
 
+## 0.2.0 - 2026-11-23
+
 - **Open types.** `#[odata(open_type(column = "..."))]` keeps an entity type's dynamic
   properties as the members of a JSON object in one column (`jsonb`, `json` or text on Postgres,
   text on SQLite). They are read, selected, filtered, sorted and written like declared

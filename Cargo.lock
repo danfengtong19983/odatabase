@@ -1464,7 +1464,7 @@ dependencies = [
 
 [[package]]
 name = "odatabase"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1491,7 +1491,7 @@ dependencies = [
 
 [[package]]
 name = "odatabase-axum"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "odatabase-core",
@@ -1499,7 +1499,7 @@ dependencies = [
 
 [[package]]
 name = "odatabase-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -1518,7 +1518,7 @@ dependencies = [
 
 [[package]]
 name = "odatabase-edm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -1530,7 +1530,7 @@ dependencies = [
 
 [[package]]
 name = "odatabase-macros"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1539,7 +1539,7 @@ dependencies = [
 
 [[package]]
 name = "odatabase-sql"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "futures",
@@ -1557,7 +1557,7 @@ dependencies = [
 
 [[package]]
 name = "odatabase-uri"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "odatabase",
