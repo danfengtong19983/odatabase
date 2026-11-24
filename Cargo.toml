@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0"
 rust-version = "1.94"
@@ -12,13 +12,13 @@ keywords = ["odata", "rest", "api", "sql", "postgres"]
 categories = ["web-programming::http-server", "database"]
 
 [workspace.dependencies]
-odatabase-edm = { path = "crates/odatabase-edm", version = "0.1.0" }
-odatabase-macros = { path = "crates/odatabase-macros", version = "0.1.0" }
-odatabase-uri = { path = "crates/odatabase-uri", version = "0.1.0" }
-odatabase-sql = { path = "crates/odatabase-sql", version = "0.1.0" }
-odatabase-core = { path = "crates/odatabase-core", version = "0.1.0" }
-odatabase-axum = { path = "crates/odatabase-axum", version = "0.1.0" }
-odatabase = { path = "crates/odatabase", version = "0.1.0" }
+odatabase-edm = { path = "crates/odatabase-edm", version = "0.2.0" }
+odatabase-macros = { path = "crates/odatabase-macros", version = "0.2.0" }
+odatabase-uri = { path = "crates/odatabase-uri", version = "0.2.0" }
+odatabase-sql = { path = "crates/odatabase-sql", version = "0.2.0" }
+odatabase-core = { path = "crates/odatabase-core", version = "0.2.0" }
+odatabase-axum = { path = "crates/odatabase-axum", version = "0.2.0" }
+odatabase = { path = "crates/odatabase", version = "0.2.0" }
 
 async-trait = "0.1"
 axum = "0.8.9"
