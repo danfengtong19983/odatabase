@@ -33,7 +33,8 @@ pub use format::{Format, MetadataLevel};
 pub use odatabase_sql::PostgresOptions;
 pub use odatabase_sql::TenantScope;
 pub use odatabase_sql::{
-    ClaimValue, Claims, Database, Dialect, ExpandLimits, QueryError, QueryExtension, TableRef,
+    ClaimValue, Claims, Database, Dialect, ExpandLimits, HiddenChanges, QueryError, QueryExtension,
+    TableRef,
 };
 pub use odatabase_uri::Limits as UriLimits;
 pub use operation::{

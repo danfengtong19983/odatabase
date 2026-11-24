@@ -137,7 +137,7 @@ impl Service {
             Ok(inner) => self.run_inner(&inner).await,
             Err(e) => Err(e),
         };
-        let response = response.unwrap_or_else(|e| e.to_response());
+        let response = response.unwrap_or_else(|e| self.error_response(e));
         remember_location(sub, &response, ids);
         response
     }
@@ -173,7 +173,7 @@ impl Service {
             Err(e) => {
                 return vec![Reply {
                     id: None,
-                    response: e.to_response(),
+                    response: self.error_response(e),
                 }];
             }
         };
@@ -196,7 +196,7 @@ impl Service {
                         response,
                     });
                 }
-                Err(e) => return abort(&session, sub, e).await,
+                Err(e) => return abort(&session, sub, self.map_error(e)).await,
             }
         }
         let ctx = ChangeContext {
@@ -207,12 +207,12 @@ impl Service {
         };
         if let Err(e) = self.inner.changes.validate_changes(&ctx).await {
             let last = list.last().expect("a change set is never empty");
-            return abort(&session, last, e).await;
+            return abort(&session, last, self.map_error(e)).await;
         }
         if let Err(e) = session.commit().await {
             return vec![Reply {
                 id: None,
-                response: ODataError::from(e).to_response(),
+                response: self.error_response(ODataError::from(e)),
             }];
         }
         replies

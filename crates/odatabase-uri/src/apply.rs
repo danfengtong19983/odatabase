@@ -304,7 +304,7 @@ fn compute(
 
 fn require_scalar(name: &str, ty: &ExprType) -> Result<(), UriError> {
     match ty {
-        ExprType::Primitive(k) if !k.is_geo() => Ok(()),
+        ExprType::Primitive(k) if !k.is_geo() && *k != PrimitiveKind::Untyped => Ok(()),
         ExprType::Enum(_) => Ok(()),
         ExprType::Untyped => Err(UriError::bad_request(format!(
             "{name} is a dynamic property: give it a type with cast"

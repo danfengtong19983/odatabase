@@ -66,7 +66,7 @@ that way.
 | Area | Supported |
 |---|---|
 | Metadata | CSDL XML and JSON, service document, `$metadata` ETag, annotations and vocabularies |
-| Model | Complex types, enums and flags, collection properties, singletons, single-table and joined inheritance, media streams, geospatial properties (stored as GeoJSON), open types with dynamic properties in a JSON column |
+| Model | Complex types, enums and flags, collection properties, singletons, single-table and joined inheritance, media streams, geospatial properties (stored as GeoJSON), open types with dynamic properties in a JSON column, `Edm.Untyped` JSON properties |
 | Mapped properties | Language-dependent descriptions, transient properties with calculators |
 | Reads | Key and navigation paths, `$filter` with lambdas and built-in functions, `$select`, `$orderby`, `$top`, `$skip`, `$count`, `$search`, `$compute`, `$schemaversion`, `$ref`, `$value`, `$entity`, `$all`, `$crossjoin`, casts, date and duration arithmetic, the same options on collection properties and inside `$select` |
 | `$apply` | `aggregate`, `groupby` (with `rollup` and `$all`), `filter`, `search`, `compute`, `orderby`, `top`, `skip`, `identity`, `concat`, `join`, `outerjoin`, `expand`, and the `topcount`, `topsum`, `toppercent` family with its `bottom` forms, in pipelines, with `sum`, `min`, `max`, `average`, `countdistinct` and `$count` |
@@ -121,7 +121,13 @@ authentication.
   rows lose only the link. Navigations the body doesn't mention are left alone. Use
   `Nav@odata.bind` to add links without replacing anything.
 - **API versions** are separate `Service` values mounted at different paths.
-- **Errors.** Database errors reach clients as generic messages. Causes are logged with `tracing`.
+- **Errors.** Database errors reach clients as generic messages: 409 for a unique, primary key,
+  foreign key or exclusion violation, 400 for a check or not-null one. Causes are logged with
+  `tracing`. To answer a constraint with your own message and code, register it:
+  `.constraint_error("todos_open_entity_assignee_uk", ODataError::new(409, "...").with_code("open_todo_exists"))`.
+  That needs a database that names the failing constraint, which Postgres does and SQLite
+  doesn't. `ODataError::with_code` sets the `code` of any error body, which is otherwise the
+  status.
 
 ### SQLite differences
 
@@ -233,6 +239,32 @@ curl -G 'http://127.0.0.1:3000/odata/BusinessObjects' \
   `open_type` on the root of a hierarchy; derived types are open with it. Complex types can't be
   open.
 
+### JSON properties
+
+A `serde_json::Value` field is an `Edm.Untyped` property (OData 4.01): any JSON value, read
+and written whole. Use it for JSON that isn't a set of fields, such as a document, an array or
+bookkeeping you don't want mixed into an open type's dynamic properties:
+
+```rust
+#[derive(ODataEntity)]
+#[odata(table = "object_type", open_type(column = "custom_fields"))]
+struct ObjectType {
+    #[odata(key)]
+    id: Uuid,
+    json_schema: serde_json::Value,           // {"type": "object", ...}
+    allowed_roles: Option<serde_json::Value>, // ["finance", "hr"]
+    metadata: serde_json::Value,
+}
+```
+
+- **Storage.** `jsonb`, `json` or text on Postgres, text on SQLite. Text that isn't JSON reads as
+  a JSON string.
+- **Writes.** POST, PATCH and PUT store the value given, replacing the stored one whole; a JSON
+  `null` clears a nullable property.
+- **Queries.** `$select` and `eq null`/`ne null` work. Other comparisons, `$orderby` and
+  `groupby` are refused with 400, because an untyped value has no type to compare or order by.
+  An `Edm.Untyped` property can't be a key.
+
 ### Change tracking
 
 Mark an entity with `#[odata(track_changes)]` and create the log once at startup:
@@ -272,8 +304,15 @@ the entities that changed since, in their current state, and an entry with `reas
   Links between entities aren't reported, only changes to the entities themselves.
 - **Tenants.** A trigger for a type with a tenant also fills the log's `tenant` column, or the
   change reaches no one.
-- **Hidden rows.** A type with row protection or a query extension can't be tracked, and `build`
-  says so: a removal entry would reveal the key of a row the caller can't see.
+- **Hidden rows.** A removal entry reveals the key of the row it removes, so a type with row
+  protection can't be tracked, and `build` says so. A type with a query extension can, once the
+  extension allows it with `QueryExtension::tracks_changes`. Its `hidden_changes` then says what
+  a caller is told about changed rows the extension hides from them:
+  `HiddenChanges::Silent` (the default) tells them nothing, so no key leaks, but a client keeps
+  its copy of a row that leaves its view or is deleted; `HiddenChanges::Removed` reports them as
+  removed, revealing their keys. Either way, a row the caller can still read that no longer
+  matches the client's `$filter` is reported. With `Silent`, prefer soft deletion the caller can
+  see, such as a `deleted_at` property the client filters on.
 - **Retention.** Call `database.prune_change_log(age)` on a schedule. A link older than that gets
   a 410, and the client reads everything again.
 - **Order on Postgres.** A position is the oldest transaction still running at the read, so a slow

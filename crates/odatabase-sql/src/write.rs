@@ -105,13 +105,29 @@ impl ColumnWrite {
 
 /// The SQL expression a column write assigns.
 fn assigned(model: &Model, dialect: Dialect, c: &ColumnWrite) -> Result<Expr, QueryError> {
-    let Some(json) = &c.json else {
-        return Ok(Expr::value(bind(
-            model,
-            dialect,
-            &c.value,
-            c.kind.as_ref(),
-        )?));
+    let replaced;
+    let json = match (&c.json, &c.value) {
+        (Some(json), _) => json,
+        // An `Edm.Untyped` property: the document is stored whole.
+        (None, Value::Json(v)) => {
+            replaced = JsonWrite::Replace(v.clone());
+            &replaced
+        }
+        // A typed null, so Postgres accepts it in a `jsonb` column (and `json` or text).
+        (None, Value::Null)
+            if dialect == Dialect::Postgres
+                && c.kind == Some(TypeKind::Primitive(PrimitiveKind::Untyped)) =>
+        {
+            return Ok(Expr::cust("CAST(NULL AS jsonb)"));
+        }
+        (None, _) => {
+            return Ok(Expr::value(bind(
+                model,
+                dialect,
+                &c.value,
+                c.kind.as_ref(),
+            )?));
+        }
     };
     let pg = dialect == Dialect::Postgres;
     let doc = |v: &serde_json::Value| -> Expr {

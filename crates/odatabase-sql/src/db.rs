@@ -399,10 +399,28 @@ fn pg_row(row: &sqlx::postgres::PgRow) -> Result<Vec<Value>, QueryError> {
             }
             "UUID" => Value::Guid(row.try_get::<Uuid, _>(i)?),
             "BYTEA" => Value::Binary(row.try_get(i)?),
+            "JSON" | "JSONB" => Value::String(pg_json_text(raw)?),
             _ => Value::String(row.try_get(i)?),
         });
     }
     Ok(out)
+}
+
+/// The text of a `json` or `jsonb` value. In the binary format `jsonb` starts with a version
+/// byte, which is 1.
+#[cfg(feature = "postgres")]
+fn pg_json_text(raw: sqlx::postgres::PgValueRef<'_>) -> Result<String, QueryError> {
+    use sqlx::postgres::PgValueFormat;
+    let binary = raw.format() == PgValueFormat::Binary;
+    let is_jsonb = raw.type_info().name() == "JSONB";
+    let bytes = raw
+        .as_bytes()
+        .map_err(|e| QueryError::internal(e.to_string()))?;
+    let bytes = match bytes {
+        [1, rest @ ..] if binary && is_jsonb => rest,
+        _ => bytes,
+    };
+    String::from_utf8(bytes.to_vec()).map_err(|e| QueryError::internal(e.to_string()))
 }
 
 #[cfg(feature = "sqlite")]
@@ -439,6 +457,7 @@ fn convert(value: Value, kind: PrimitiveKind) -> Result<Value, QueryError> {
         }
         (Value::Int64(v), P::Duration) => Ok(Value::Duration(TimeDelta::microseconds(*v))),
         (Value::String(s), k) if k.is_geo() => Ok(Value::Geo(s.clone())),
+        (Value::String(s), P::Untyped) => Ok(Value::Json(odatabase_edm::json_text(s))),
         (Value::String(s), k) => from_sea_string(k, s),
         _ => value.coerce(kind).ok_or_else(|| mismatch(&value)),
     }

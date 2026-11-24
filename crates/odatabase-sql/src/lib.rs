@@ -30,7 +30,7 @@ pub use changes::{ChangeKind, record_change};
 pub use changes::{LoggedChange, change_floor, change_position, read_changes};
 #[doc(hidden)]
 pub use context::QueryContext;
-pub use context::{ClaimValue, Claims, QueryExtension, TableRef, TenantScope};
+pub use context::{ClaimValue, Claims, HiddenChanges, QueryExtension, TableRef, TenantScope};
 #[doc(hidden)]
 pub use crossjoin::{CrossJoinRow, count_crossjoin, read_crossjoin};
 #[cfg(feature = "postgres")]

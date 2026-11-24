@@ -33,6 +33,8 @@ pub enum PrimitiveKind {
     GeometryPoint,
     GeometryLineString,
     GeometryPolygon,
+    /// `Edm.Untyped` (OData 4.01): any JSON value, stored as a JSON document.
+    Untyped,
 }
 
 impl PrimitiveKind {
@@ -61,12 +63,13 @@ impl PrimitiveKind {
             Self::GeometryPoint => "Edm.GeometryPoint",
             Self::GeometryLineString => "Edm.GeometryLineString",
             Self::GeometryPolygon => "Edm.GeometryPolygon",
+            Self::Untyped => "Edm.Untyped",
         }
     }
 
     /// The kind with this qualified name.
     pub fn from_edm_name(name: &str) -> Option<Self> {
-        const ALL: [PrimitiveKind; 22] = [
+        const ALL: [PrimitiveKind; 23] = [
             PrimitiveKind::Boolean,
             PrimitiveKind::Byte,
             PrimitiveKind::SByte,
@@ -89,6 +92,7 @@ impl PrimitiveKind {
             PrimitiveKind::GeometryPoint,
             PrimitiveKind::GeometryLineString,
             PrimitiveKind::GeometryPolygon,
+            PrimitiveKind::Untyped,
         ];
         ALL.into_iter().find(|k| k.edm_name() == name)
     }
@@ -172,6 +176,9 @@ pub enum Value {
     },
     /// GeoJSON document of a geospatial property.
     Geo(String),
+    /// `Edm.Untyped`: any JSON value. A JSON `null` inside is a value; the property being null
+    /// is [`Value::Null`].
+    Json(serde_json::Value),
 }
 
 /// A literal could not be read as the requested kind.
@@ -210,6 +217,7 @@ impl Value {
             Self::Duration(_) => PrimitiveKind::Duration,
             Self::Guid(_) => PrimitiveKind::Guid,
             Self::Binary(_) => PrimitiveKind::Binary,
+            Self::Json(_) => PrimitiveKind::Untyped,
         })
     }
 
@@ -253,6 +261,7 @@ impl Value {
                     .map_err(|_| err())?,
             ),
             k if k.is_geo() => Self::Geo(text.to_owned()),
+            PrimitiveKind::Untyped => Self::Json(serde_json::from_str(text).map_err(|_| err())?),
             _ => return Err(err()),
         })
     }
@@ -278,6 +287,7 @@ impl Value {
             Self::Guid(v) => v.to_string(),
             Self::Binary(v) => URL_SAFE_NO_PAD.encode(v),
             Self::Enum { member, .. } => member.clone(),
+            Self::Json(v) => v.to_string(),
         }
     }
 
@@ -327,6 +337,7 @@ impl Value {
                 Some(Self::Decimal(Decimal::from_str(&d.to_string()).ok()?))
             }
             (Self::String(s), k) if k.is_geo() => Some(Self::Geo(s.clone())),
+            (Self::String(s), PrimitiveKind::Untyped) => Some(Self::Json(json_text(s))),
             (Self::Date(d), PrimitiveKind::DateTimeOffset) => Some(Self::DateTimeOffset(
                 d.and_hms_opt(0, 0, 0)?.and_utc().fixed_offset(),
             )),
@@ -451,6 +462,12 @@ fn format_duration(d: TimeDelta) -> String {
         }
     }
     out
+}
+
+/// A JSON document read from the database. Text that isn't JSON (a plain `text` column written
+/// by something else) reads as a JSON string rather than failing the whole read.
+pub fn json_text(text: &str) -> serde_json::Value {
+    serde_json::from_str(text).unwrap_or_else(|_| serde_json::Value::String(text.to_owned()))
 }
 
 #[cfg(test)]

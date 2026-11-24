@@ -83,7 +83,7 @@ pub mod sql {
     pub use odatabase_sql::PostgresOptions;
     pub use odatabase_sql::{
         ChangeKind, ClaimValue, Claims, ColumnDecode, ColumnValue, ColumnWrite, Database, Dialect,
-        ExpandLimits, JsonWrite, QueryError, QueryExtension, Session, TableRef, TenantScope, Tx,
-        delete, insert, record_change, sea_query, update,
+        ExpandLimits, HiddenChanges, JsonWrite, QueryError, QueryExtension, Session, TableRef,
+        TenantScope, Tx, delete, insert, record_change, sea_query, update,
     };
 }

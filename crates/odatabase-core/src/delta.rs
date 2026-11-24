@@ -2,8 +2,10 @@
 //!
 //! A delta page takes the keys of changed entities from the log, then runs the client's query
 //! restricted to those keys. Every rule of a normal read applies, and a key the query no longer
-//! returns is reported as removed. Types whose rows can be hidden from the caller are not
-//! tracked, since such a report would reveal the keys of rows the caller may not see.
+//! returns is reported as removed. Such a report would reveal the keys of rows the caller may not
+//! see, so types with row protection are not tracked, and for a type with a query extension the
+//! extension decides ([`odatabase_sql::HiddenChanges`]): by default only keys the caller can
+//! still read are reported.
 
 use crate::capabilities::stays_on_row;
 use crate::format::Format;
@@ -14,8 +16,8 @@ use crate::{ODataError, ODataRequest, ODataResponse, Service};
 use http::{HeaderValue, StatusCode};
 use odatabase_edm::{Model, TypeKind, Value};
 use odatabase_sql::{
-    ChangeKind, Page, ReadRequest, Session, TenantScope, change_floor, change_position,
-    read_changes, read_entities, record_change,
+    ChangeKind, HiddenChanges, Page, ReadRequest, Session, TenantScope, change_floor,
+    change_position, read_changes, read_entities, record_change,
 };
 use odatabase_uri::{
     BinaryOp, Expr, ExprType, ODataUri, Path, PathRoot, QueryOptions, Segment, SelectItem, Step,
@@ -256,6 +258,55 @@ impl Service {
         Ok(())
     }
 
+    /// Of `missing`, the changed keys the read no longer returned, the ones whose removal may be
+    /// reported: `None` for all of them. A query extension that keeps hidden changes silent
+    /// limits them to rows the caller can still read without the client's own options.
+    async fn reportable_removals(
+        &self,
+        req: &ODataRequest,
+        session: &Session,
+        set: &str,
+        type_name: &str,
+        missing: Vec<Vec<(String, Value)>>,
+    ) -> Result<Option<std::collections::HashSet<String>>, ODataError> {
+        let model = &self.inner.model;
+        let silent = model
+            .type_chain(type_name)
+            .iter()
+            .filter(|t| t.query_extension)
+            .filter_map(|t| self.inner.extensions.get(&t.name))
+            .any(|e| e.hidden_changes(&req.claims) == HiddenChanges::Silent);
+        if !silent {
+            return Ok(None);
+        }
+        let keys_only = QueryOptions {
+            select: Some(
+                model
+                    .key_of(type_name)
+                    .iter()
+                    .map(|k| SelectItem::Path(vec![k.clone()]))
+                    .collect(),
+            ),
+            ..QueryOptions::default()
+        };
+        let visible = self
+            .entities_with_keys(req, session, set, type_name, &keys_only, &missing)
+            .await?;
+        Ok(Some(
+            visible
+                .iter()
+                .map(|rec| {
+                    let key: Vec<(String, Value)> = model
+                        .key_of(type_name)
+                        .iter()
+                        .filter_map(|k| Some((k.clone(), rec.value(k)?.clone())))
+                        .collect();
+                    key_text(&key)
+                })
+                .collect(),
+        ))
+    }
+
     /// An entry that takes an entity out of a client's result.
     pub(crate) fn removed_entry(
         &self,
@@ -366,16 +417,26 @@ impl Service {
                 .collect();
             found.insert(key_text(&key), Json::Object(w.entity(rec, type_name)));
         }
+        // Keys gone from the result whose removal this caller may be told about.
+        let missing: Vec<Vec<(String, Value)>> = order
+            .iter()
+            .filter(|k| !found.contains_key(*k))
+            .filter_map(|k| keys.get(k).cloned())
+            .collect();
+        let reportable = self
+            .reportable_removals(req, session, set, type_name, missing)
+            .await?;
         let items: Vec<Json> = order
             .iter()
-            .map(|key| match found.remove(key) {
-                Some(row) => row,
+            .filter_map(|key| match found.remove(key) {
+                Some(row) => Some(row),
+                None if !reportable.as_ref().is_none_or(|r| r.contains(key)) => None,
                 None => {
                     let reason = match kinds.get(key) {
                         Some(ChangeKind::Deleted) => "deleted",
                         _ => "changed",
                     };
-                    self.removed_entry(req, set, key, reason)
+                    Some(self.removed_entry(req, set, key, reason))
                 }
             })
             .collect();

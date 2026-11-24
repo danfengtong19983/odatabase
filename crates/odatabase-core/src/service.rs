@@ -61,6 +61,7 @@ pub(crate) struct Inner {
     pub operations: HashMap<String, Arc<dyn OperationHandler>>,
     pub calculators: HashMap<(String, String), Arc<dyn TransientCalculator>>,
     pub session_settings: Option<SessionSettings>,
+    pub constraint_errors: HashMap<String, ODataError>,
     pub metadata: crate::visibility::MetadataCache,
 }
 
@@ -83,6 +84,7 @@ pub struct ServiceBuilder {
     operations: HashMap<String, Arc<dyn OperationHandler>>,
     calculators: HashMap<(String, String), Arc<dyn TransientCalculator>>,
     session_settings: Option<SessionSettings>,
+    constraint_errors: HashMap<String, ODataError>,
 }
 
 impl Service {
@@ -97,7 +99,28 @@ impl Service {
             operations: HashMap::new(),
             calculators: HashMap::new(),
             session_settings: None,
+            constraint_errors: HashMap::new(),
         }
+    }
+
+    /// `error` with the error registered for its database constraint in its place, if any.
+    pub(crate) fn map_error(&self, error: ODataError) -> ODataError {
+        match error
+            .constraint
+            .as_deref()
+            .and_then(|c| self.inner.constraint_errors.get(c))
+        {
+            Some(mapped) => ODataError {
+                constraint: error.constraint,
+                ..mapped.clone()
+            },
+            None => error,
+        }
+    }
+
+    /// The response for a failed request.
+    pub(crate) fn error_response(&self, error: ODataError) -> ODataResponse {
+        self.map_error(error).to_response()
     }
 
     /// A transaction for a change, with the settings of `req` applied.
@@ -162,7 +185,7 @@ impl Service {
                 .unwrap_or_else(|_| Err(ODataError::new(503, "the request took too long"))),
             None => self.dispatch(&req).await,
         };
-        let mut response = outcome.unwrap_or_else(|e| e.to_response());
+        let mut response = outcome.unwrap_or_else(|e| self.error_response(e));
         response
             .headers
             .insert("odata-version", http::HeaderValue::from_static("4.0"));
@@ -305,6 +328,16 @@ impl ServiceBuilder {
         self
     }
 
+    /// The error to answer when the database constraint `name` refuses a change, in place of
+    /// the generic one (such as 409 "the entity already exists" for a unique index). Use it to
+    /// give a constraint a message and [`ODataError::with_code`] the client can act on. Only
+    /// databases that name the failing constraint, which Postgres does and SQLite doesn't, get
+    /// the mapped error. Change handlers see the name in [`ODataError::constraint`].
+    pub fn constraint_error(mut self, name: impl Into<String>, error: ODataError) -> Self {
+        self.constraint_errors.insert(name.into(), error);
+        self
+    }
+
     /// Replaces the pager. The default is [`OffsetPaging`] with `DEFAULT_PAGE_SIZE`.
     pub fn paging(mut self, paging: impl PagingProvider + 'static) -> Self {
         self.paging = Arc::new(paging);
@@ -430,11 +463,25 @@ impl ServiceBuilder {
                         t.name
                     )));
                 }
-                if crate::write::row_restricted(&model, &t.name) {
+                if crate::write::row_protected(&model, &t.name) {
                     return Err(ModelError(format!(
                         "{}: rows hidden from some callers cannot be tracked",
                         t.name
                     )));
+                }
+                for base in model.type_chain(&t.name) {
+                    let untracked = base.query_extension
+                        && self
+                            .extensions
+                            .get(&base.name)
+                            .is_some_and(|e| !e.tracks_changes());
+                    if untracked {
+                        return Err(ModelError(format!(
+                            "{}: its query extension doesn't allow tracking changes \
+                             (QueryExtension::tracks_changes)",
+                            t.name
+                        )));
+                    }
                 }
             }
             if t.query_extension && !self.extensions.contains_key(&t.name) {
@@ -464,6 +511,7 @@ impl ServiceBuilder {
                 operations: self.operations,
                 calculators: self.calculators,
                 session_settings: self.session_settings,
+                constraint_errors: self.constraint_errors,
             }),
         })
     }

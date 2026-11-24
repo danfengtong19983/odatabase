@@ -47,6 +47,16 @@ impl QueryError {
         }
     }
 
+    /// The name of the database constraint that refused the statement, when the database
+    /// reports one. Postgres names unique, foreign key, check, exclusion and not-null
+    /// constraints; SQLite reports none.
+    pub fn constraint(&self) -> Option<&str> {
+        match self {
+            Self::Database(sqlx::Error::Database(db)) => db.constraint(),
+            _ => None,
+        }
+    }
+
     /// The HTTP status, and for request errors a message safe to show to clients.
     /// Database messages can reveal the schema, so they are never returned.
     pub fn response(&self) -> (u16, String) {
@@ -70,6 +80,8 @@ fn database_status(e: &sqlx::Error) -> (u16, String) {
             "23505" | "1555" | "2067" => return (409, "the entity already exists".into()),
             "23503" | "787" => return (409, "a referenced entity is missing or in use".into()),
             "23502" | "1299" => return (400, "a required property is missing".into()),
+            "23514" | "275" => return (400, "a value breaks a rule of the database".into()),
+            "23P01" => return (409, "the entity conflicts with another".into()),
             "22012" => return (400, "division by zero".into()),
             // A row-level security policy refused the row.
             "42501" => return (403, "the row is not accessible".into()),

@@ -31,6 +31,7 @@ impl Writer<'_> {
             Value::Decimal(_) if self.format.ieee754 => Json::String(v.to_text()),
             Value::Decimal(_) => Number::from_string_unchecked(v.to_text()).into(),
             Value::Binary(b) => Json::String(URL_SAFE_NO_PAD.encode(b)),
+            Value::Json(doc) => doc.clone(),
             Value::Geo(text) => {
                 serde_json::from_str(text).unwrap_or_else(|_| Json::String(text.clone()))
             }

@@ -13,6 +13,30 @@ before 1.0, a minor version may break the API, and its entry says how to migrate
   `sql::ColumnWrite` a new `json` field, with `ColumnWrite::json` and `sql::JsonWrite` to fill
   it. Code that builds these with struct literals needs the new field.
 
+- **Change tracking with query extensions.** A type with a query extension can be tracked once
+  the extension returns true from the new `QueryExtension::tracks_changes`. Its
+  `hidden_changes` chooses, per caller, whether changes to rows it hides are left out of delta
+  responses (`HiddenChanges::Silent`, the default, which reveals no keys) or reported as removed
+  (`HiddenChanges::Removed`). Both new methods have defaults, so existing extensions compile and
+  stay untracked.
+
+- **Constraint errors.** `ServiceBuilder::constraint_error(name, error)` answers a violation of
+  the named database constraint with `error` instead of the generic message, in requests and in
+  `$batch` change sets. Postgres names the constraint; SQLite doesn't, so there the generic
+  error stays. Change handlers can read the name in `ODataError::constraint`.
+- **Error codes.** `ODataError::with_code` sets the `code` of the error body, which otherwise
+  stays the status.
+- **Fix:** a check violation now answers 400 and an exclusion violation 409, instead of 500.
+- **Breaking:** `ODataError` has new `code` and `constraint` fields. Code that builds it with a
+  struct literal needs them; `ODataError::new` is unchanged.
+
+- **JSON properties.** A `serde_json::Value` field is an `Edm.Untyped` property: any JSON
+  value, stored whole in a `jsonb`, `json` or text column on Postgres and text on SQLite. It can
+  be selected and checked against null, not compared or sorted. See "JSON properties" in the
+  README. Postgres reads `json` and `jsonb` columns as text wherever they appear.
+- **Breaking:** `PrimitiveKind` has a new `Untyped` variant and `Value` a new `Json` variant.
+  Exhaustive matches on them need an arm.
+
 - **`rename_all`.** `#[odata(rename_all = "snake_case")]`, `"camelCase"` or `"PascalCase"` on an
   entity or complex type names the properties and navigation properties of its fields without a
   `name`. The default stays `PascalCase`.
